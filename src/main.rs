@@ -1,8 +1,5 @@
-use mycal::Classifier;
+use mycal::tokenize;
 
 fn main() {
-    let foo = Classifier {
-        lambda: 0.001,
-        num_iters: 100,
-    };
+    println!("{:?}", tokenize("This is a test of the 1best tokenizer"));
 }
