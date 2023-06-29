@@ -2,6 +2,81 @@ use porter_stemmer::stem;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DocInfo {
+    pub intid: usize,
+    pub docid: String,
+    pub offset: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Docs {
+    pub m: HashMap<String, usize>,
+    pub docs: Vec<DocInfo>,
+}
+
+impl Docs {
+    pub fn new() -> Docs {
+        Docs {
+            m: HashMap::new(),
+            docs: Vec::new(),
+        }
+    }
+    pub fn get_intid(&self, docid: &str) -> Option<&usize> {
+        self.m.get(docid)
+    }
+    pub fn add_doc(&mut self, docid: &str) -> usize {
+        if self.m.contains_key(docid) {
+            self.m.get(docid).unwrap().to_owned()
+        } else {
+            let intid = self.docs.len();
+            self.m.insert(docid.to_string(), intid);
+            self.docs.push(DocInfo {
+                docid: docid.to_string(),
+                intid,
+                offset: 0,
+            });
+            intid
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Dict {
+    pub m: HashMap<String, usize>,
+    pub df: HashMap<usize, f32>,
+    pub last_tokid: usize,
+}
+
+impl Dict {
+    pub fn new() -> Dict {
+        Dict {
+            m: HashMap::new(),
+            df: HashMap::new(),
+            last_tokid: 0,
+        }
+    }
+    pub fn has_tok(&self, tok: String) -> bool {
+        self.m.contains_key(&tok)
+    }
+    pub fn get_tokid(&self, tok: String) -> Option<&usize> {
+        self.m.get(&tok)
+    }
+    pub fn add_tok(&mut self, tok: String) -> usize {
+        if self.m.contains_key(&tok) {
+            self.m.get(&tok).unwrap().to_owned()
+        } else {
+            self.last_tokid += 1;
+            self.m.insert(tok, self.last_tokid);
+            self.last_tokid
+        }
+    }
+    pub fn incr_df(&mut self, tokid: usize) {
+        *self.df.entry(tokid).or_insert(0.0) += 1.0;
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FeaturePair {
@@ -17,6 +92,13 @@ pub struct FeatureVec {
 }
 
 impl FeatureVec {
+    pub fn new(docid: String) -> FeatureVec {
+        FeatureVec {
+            docid,
+            features: Vec::new(),
+            squared_norm: 0.0,
+        }
+    }
     pub fn num_features(&self) -> usize {
         self.features.len()
     }
@@ -28,12 +110,6 @@ impl FeatureVec {
     }
     pub fn push(&mut self, id: usize, val: f32) {
         self.features.push(FeaturePair { id, value: val });
-    }
-    pub fn encode(&self) -> Vec<u8> {
-        bincode::serialize(&self.features).unwrap()
-    }
-    pub fn decode(encoded: &[u8]) -> FeatureVec {
-        bincode::deserialize(encoded).unwrap()
     }
 }
 
