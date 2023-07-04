@@ -1,8 +1,12 @@
+use bincode::Result;
 use porter_stemmer::stem;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::rc::Rc;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DocInfo {
@@ -24,6 +28,10 @@ impl Docs {
             docs: Vec::new(),
         }
     }
+    pub fn load(filename: &str) -> Result<Docs> {
+        let mut infp = BufReader::new(File::open(filename)?);
+        bincode::deserialize_from::<&mut BufReader<File>, Docs>(&mut infp)
+    }
     pub fn get_intid(&self, docid: &str) -> Option<&usize> {
         self.m.get(docid)
     }
@@ -40,6 +48,12 @@ impl Docs {
             });
             intid
         }
+    }
+    pub fn save(&self, filename: &str) -> std::io::Result<()> {
+        let mut outfp = BufWriter::new(File::create(filename)?);
+        bincode::serialize_into(&mut outfp, self).expect("Error writing dictionary");
+        outfp.flush()?;
+        Ok(())
     }
 }
 
@@ -58,6 +72,10 @@ impl Dict {
             last_tokid: 0,
         }
     }
+    pub fn load(filename: &str) -> Result<Dict> {
+        let mut infp = BufReader::new(File::open(filename)?);
+        bincode::deserialize_from::<&mut BufReader<File>, Dict>(&mut infp)
+    }
     pub fn has_tok(&self, tok: String) -> bool {
         self.m.contains_key(&tok)
     }
@@ -75,6 +93,12 @@ impl Dict {
     }
     pub fn incr_df(&mut self, tokid: usize) {
         *self.df.entry(tokid).or_insert(0.0) += 1.0;
+    }
+    pub fn save(&self, filename: &str) -> std::io::Result<()> {
+        let mut outfp = BufWriter::new(File::create(filename)?);
+        bincode::serialize_into(&mut outfp, self).expect("Error writing dictionary");
+        outfp.flush()?;
+        Ok(())
     }
 }
 
@@ -98,6 +122,13 @@ impl FeatureVec {
             features: Vec::new(),
             squared_norm: 0.0,
         }
+    }
+    pub fn read_from(fp: &mut BufReader<File>) -> Result<FeatureVec> {
+        bincode::deserialize_from::<&mut BufReader<File>, FeatureVec>(fp)
+    }
+    pub fn write_to(&self, fp: BufWriter<File>) -> Result<()> {
+        bincode::serialize_into(fp, self).expect("Error writing FeatureVec");
+        Ok(())
     }
     pub fn num_features(&self) -> usize {
         self.features.len()

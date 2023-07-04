@@ -9,13 +9,14 @@ use std::fs::{remove_file, File};
 use std::io::Write;
 use std::io::{BufRead, BufReader, BufWriter, Result, Seek};
 use std::path::Path;
+use std::rc::Rc;
 
 #[derive(Parser)]
 struct Cli {
-    /// The path to a file of documents, formatted as JSON lines
-    bundle: String,
     /// The prefix for on-disk structures
     out_prefix: String,
+    /// The path to a file of documents, formatted as JSON lines
+    bundles: Vec<String>,
 }
 
 /// Read normal or compressed files seamlessly
@@ -65,31 +66,39 @@ fn main() -> Result<()> {
     let mut dict: Dict = Dict::new();
     let mut library = Docs::new();
 
-    let mut binout = BufWriter::new(File::create(args.out_prefix.clone() + ".tmp")?);
-    let mut progress = tqdm!();
     let mut num_docs = 0;
-    let reader = reader(&args.bundle);
+    let mut binout = BufWriter::new(File::create(args.out_prefix.clone() + ".tmp")?);
 
-    reader
-        .lines()
-        .map(|line| from_str::<Map<String, Value>>(&line.unwrap()).expect("Error parsing JSON"))
-        .map(|docmap| tokenize_and_map(docmap, &mut dict))
-        .map(|(docid, docmap)| {
-            let mut fv = FeatureVec::new(docid.clone());
-            for (tok, count) in docmap {
-                fv.push(tok, count as f32);
-            }
-            library.add_doc(&docid);
-            fv
-        })
-        .for_each(|fv| {
-            progress.update(1);
-            num_docs += 1;
-            bincode::serialize_into(&mut binout, &fv).expect("Error writing to bin file");
-        });
+    for bundle in args.bundles {
+        let path = Path::new(&bundle);
+        let desc = path.file_name().unwrap().to_str().unwrap();
+        let mut progress = tqdm!();
 
-    binout.flush()?;
-    progress.refresh();
+        progress.set_description(desc);
+
+        let reader = reader(&bundle);
+
+        reader
+            .lines()
+            .map(|line| from_str::<Map<String, Value>>(&line.unwrap()).expect("Error parsing JSON"))
+            .map(|docmap| tokenize_and_map(docmap, &mut dict))
+            .map(|(docid, docmap)| {
+                let mut fv = FeatureVec::new(docid.clone());
+                for (tok, count) in docmap {
+                    fv.push(tok, count as f32);
+                }
+                library.add_doc(&docid);
+                fv
+            })
+            .for_each(|fv| {
+                progress.update(1);
+                num_docs += 1;
+                bincode::serialize_into(&mut binout, &fv).expect("Error writing to bin file");
+            });
+
+        binout.flush()?;
+        progress.refresh();
+    }
 
     // Compute IDF, drop singleton terms
     println!("Compute IDFs and prune dictionary");
@@ -116,12 +125,12 @@ fn main() -> Result<()> {
 
     // Reassign token IDs and precompute tfidf weights
     println!("Second pass: precompute weights and fix up tokenids");
-    progress = Bar::new(num_docs);
+    let mut progress = Bar::new(num_docs);
     let mut intid = 0;
     let mut binin = BufReader::new(File::open(args.out_prefix.clone() + ".tmp")?);
     binout = BufWriter::new(File::create(args.out_prefix.clone() + ".ftr")?);
 
-    while let Ok(fv) = bincode::deserialize_from::<&mut BufReader<File>, FeatureVec>(&mut binin) {
+    while let Ok(fv) = FeatureVec::read_from(&mut binin) {
         let mut new_fv = FeatureVec::new(fv.docid.clone());
         for f in &fv.features {
             if let Some(new_tokid) = old_to_new.get(&f.id) {
@@ -139,11 +148,10 @@ fn main() -> Result<()> {
         progress.update(1);
     }
     binout.flush()?;
-    remove_file(args.out_prefix.to_string() + "tmp")?;
+    remove_file(args.out_prefix.to_string() + ".tmp")?;
 
-    let mut libout = BufWriter::new(File::create(args.out_prefix.clone() + ".lib")?);
-    bincode::serialize_into(&mut libout, &library).expect("Error writing doc library");
-    libout.flush()?;
+    library.save(&(args.out_prefix.clone() + ".lib"))?;
+    new_dict.save(&(args.out_prefix + ".dct"))?;
 
     Ok(())
 }
