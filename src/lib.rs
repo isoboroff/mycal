@@ -1,4 +1,5 @@
 use bincode::Result;
+use kv;
 use porter_stemmer::stem;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
@@ -6,13 +7,66 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
-use std::rc::Rc;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DocInfo {
     pub intid: usize,
     pub docid: String,
     pub offset: u64,
+}
+
+pub struct DocsDb<'a> {
+    pub filename: String,
+    pub db: kv::Bucket<'a, String, kv::Bincode<DocInfo>>,
+    pub next_intid: usize,
+}
+
+impl DocsDb<'_> {
+    pub fn open(filename: &str) -> DocsDb {
+        let conf = kv::Config::new(&filename);
+        let store = kv::Store::new(conf).unwrap();
+        let bucket = store
+            .bucket::<String, kv::Bincode<DocInfo>>(Some("docinfo"))
+            .unwrap();
+
+        DocsDb {
+            filename: filename.to_string(),
+            db: bucket,
+            next_intid: 0,
+        }
+    }
+
+    pub fn get_intid(&self, docid: &str) -> Option<usize> {
+        let tmp_docid = docid.to_string();
+        let docinfo = self.db.get(&tmp_docid);
+        match docinfo {
+            Ok(di) => Some(di.unwrap().0.intid),
+            _ => None,
+        }
+    }
+
+    pub fn add_doc(&mut self, docid: &str) -> Option<usize> {
+        let tmp_docid = docid.to_string();
+        match self.db.get(&tmp_docid) {
+            Ok(di) => match di {
+                Some(di) => Some(di.0.intid),
+                None => None,
+            },
+            _ => {
+                let intid = self.next_intid;
+                self.next_intid = intid + 1;
+                let new_di = kv::Bincode(DocInfo {
+                    intid,
+                    docid: tmp_docid.clone(),
+                    offset: 0,
+                });
+                self.db
+                    .set(&tmp_docid, &new_di)
+                    .expect("Could not insert DocInfo into db");
+                Some(intid)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -144,6 +198,7 @@ impl FeatureVec {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Classifier {
     pub lambda: f32,
     pub num_iters: u32,
@@ -162,6 +217,18 @@ impl Classifier {
             scale: 1.0,
             squared_norm: 0.0,
         }
+    }
+
+    pub fn load(filename: &str) -> Result<Classifier> {
+        let mut infp = BufReader::new(File::open(filename)?);
+        bincode::deserialize_from::<&mut BufReader<File>, Classifier>(&mut infp)
+    }
+
+    pub fn save(&self, filename: &str) -> std::io::Result<()> {
+        let mut outfp = BufWriter::new(File::create(filename)?);
+        bincode::serialize_into(&mut outfp, self).expect("Error writing model");
+        outfp.flush()?;
+        Ok(())
     }
 
     pub fn train(&mut self, positives: &Vec<FeatureVec>, negatives: &Vec<FeatureVec>) {

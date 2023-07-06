@@ -1,7 +1,8 @@
 use clap::Parser;
 use flate2::read;
 use kdam::{tqdm, Bar, BarExt};
-use mycal::{tokenize, Dict, Docs, FeatureVec};
+use kv;
+use mycal::{tokenize, Dict, DocInfo, Docs, DocsDb, FeatureVec};
 use serde_json::{from_str, Map, Value};
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -9,7 +10,6 @@ use std::fs::{remove_file, File};
 use std::io::Write;
 use std::io::{BufRead, BufReader, BufWriter, Result, Seek};
 use std::path::Path;
-use std::rc::Rc;
 
 #[derive(Parser)]
 struct Cli {
@@ -24,7 +24,7 @@ struct Cli {
 /// from https://users.rust-lang.org/t/write-to-normal-or-gzip-file-transparently/35561/2
 pub fn reader(filename: &str) -> Box<dyn BufRead> {
     let path = Path::new(filename);
-    let file = match File::open(&path) {
+    let file = match File::open(path) {
         Err(why) => panic!("couldn't open {}: {:?}", path.display(), why),
         Ok(file) => file,
     };
@@ -142,7 +142,7 @@ fn main() -> Result<()> {
             println!("oh shit: {}", intid);
         }
         library.docs[intid].offset = binout.stream_position().unwrap();
-        bincode::serialize_into(&mut binout, &fv).expect("Error writing to final bin file");
+        bincode::serialize_into(&mut binout, &new_fv).expect("Error writing to final bin file");
         binout.flush()?;
         intid += 1;
         progress.update(1);
@@ -150,7 +150,20 @@ fn main() -> Result<()> {
     binout.flush()?;
     remove_file(args.out_prefix.to_string() + ".tmp")?;
 
-    library.save(&(args.out_prefix.clone() + ".lib"))?;
+    let libdb_fn = args.out_prefix.to_string() + ".lib";
+    let lib = DocsDb::open(&libdb_fn);
+    progress = Bar::new(library.m.len());
+    for (docid, intid) in library.m.drain() {
+        let di = library.docs.get(intid).unwrap();
+        let dib = kv::Bincode(DocInfo {
+            intid: di.intid,
+            docid: di.docid.clone(),
+            offset: di.offset,
+        });
+        lib.db.set(&docid, &dib).expect("Could not insert into db");
+        progress.update(1);
+    }
+
     new_dict.save(&(args.out_prefix + ".dct"))?;
 
     Ok(())
