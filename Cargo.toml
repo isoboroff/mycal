@@ -14,3 +14,5 @@ rand = "0.8.5"
 serde = { version = "1.0.164", features = ["derive"] }
 serde_json = "1.0.97"
 flate2 = { version = "1.0.17", features = ["zlib-ng"], default-features = false }
+sled = "0.34.7"
+kv = { version = "0.24.0", features = ["bincode-value"] }
