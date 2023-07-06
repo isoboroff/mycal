@@ -6,7 +6,7 @@ use rand::thread_rng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufReader, BufWriter, Write};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DocInfo {
@@ -195,6 +195,16 @@ impl FeatureVec {
     }
     pub fn push(&mut self, id: usize, val: f32) {
         self.features.push(FeaturePair { id, value: val });
+    }
+    pub fn normalize(&mut self) {
+        let norm = self
+            .features
+            .iter()
+            .map(|fp| fp.value * fp.value)
+            .reduce(|acc, e| acc + e)
+            .unwrap_or(0.0)
+            .sqrt();
+        self.squared_norm = norm;
     }
 }
 
