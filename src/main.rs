@@ -1,5 +1,9 @@
 use clap::{Arg, ArgMatches, Command};
+use kdam::{tqdm, Bar, BarExt};
+use min_max_heap::MinMaxHeap;
 use mycal::{Classifier, Dict, DocInfo, DocsDb, FeatureVec};
+use ordered_float::OrderedFloat;
+use std::cmp::Ordering;
 use std::error::Error;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
@@ -23,6 +27,18 @@ fn cli() -> Command {
                 .about("Apply the given qrels file as training examples")
                 .arg(Arg::new("qrels_file").help("The qrels file")),
         )
+        .subcommand(
+            Command::new("score")
+                .about("Score the collection and return the top n documents")
+                .arg(
+                    Arg::new("num_scores")
+                        .short('n')
+                        .long("num_scores")
+                        .value_parser(clap::value_parser!(usize))
+                        .default_value("100")
+                        .help("Number of top-scoring documents to retrieve"),
+                ),
+        )
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -33,6 +49,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     match args.subcommand() {
         Some(("qrels", qrels_args)) => {
             train_qrels(coll_prefix, model_file, qrels_args)?;
+        }
+        Some(("score", score_args)) => {
+            score_collection(coll_prefix, model_file, score_args)?;
         }
         Some((&_, _)) => panic!("No subcommand specified"),
         None => panic!("No subcommand specified"),
@@ -92,4 +111,62 @@ fn train_qrels(
     model.train(&pos, &neg);
     model.save(model_file)?;
     Ok(model)
+}
+
+#[derive(Eq, Debug)]
+struct DocScore {
+    docid: String,
+    score: OrderedFloat<f32>,
+}
+
+impl Ord for DocScore {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.score.cmp(&other.score)
+    }
+}
+
+impl PartialOrd for DocScore {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for DocScore {
+    fn eq(&self, other: &Self) -> bool {
+        self.score == other.score
+    }
+}
+
+fn score_collection(
+    coll_prefix: &str,
+    model_file: &str,
+    score_args: &ArgMatches,
+) -> Result<Vec<DocScore>, std::io::Error> {
+    let model = Classifier::load(model_file).unwrap();
+    let n = score_args.get_one::<usize>("num_scores").unwrap();
+
+    let feat_file = coll_prefix.to_string() + ".ftr";
+
+    let mut top_scores: MinMaxHeap<DocScore> = MinMaxHeap::new();
+
+    let mut feats = BufReader::new(File::open(feat_file)?);
+    let mut progress = tqdm!();
+
+    while let Ok(fv) = FeatureVec::read_from(&mut feats) {
+        let score = model.inner_product(&fv);
+        top_scores.push(DocScore {
+            docid: fv.docid,
+            score: OrderedFloat(score),
+        });
+
+        while top_scores.len() > *n {
+            top_scores.pop_min();
+        }
+        progress.update(1);
+    }
+
+    let top = top_scores.into_vec_desc();
+    println!("{:?}", &top);
+
+    Ok(top)
 }
