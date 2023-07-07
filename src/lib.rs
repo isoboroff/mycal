@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Write};
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd)]
 pub struct DocInfo {
     pub intid: usize,
     pub docid: String,
@@ -299,7 +299,7 @@ pub struct Classifier {
 impl Classifier {
     pub fn new(dimensionality: usize, lambda: f32, num_iters: u32) -> Classifier {
         Classifier {
-            w: vec![0.0; dimensionality],
+            w: vec![0.0; dimensionality + 1],
             lambda,
             num_iters,
             scale: 1.0,
@@ -350,7 +350,7 @@ impl Classifier {
         self.scale_to_one();
     }
 
-    fn inner_product(&self, x: &FeatureVec) -> f32 {
+    pub fn inner_product(&self, x: &FeatureVec) -> f32 {
         let mut prod = 0.0;
         for (i, _feat) in x.features.iter().enumerate() {
             prod += self.w[x.feature_at(i)] * x.value_at(i);
@@ -358,7 +358,7 @@ impl Classifier {
         prod * self.scale
     }
 
-    fn inner_product_on_difference(&self, a: &FeatureVec, b: &FeatureVec) -> f32 {
+    pub fn inner_product_on_difference(&self, a: &FeatureVec, b: &FeatureVec) -> f32 {
         self.inner_product(a) - self.inner_product(b)
     }
 
