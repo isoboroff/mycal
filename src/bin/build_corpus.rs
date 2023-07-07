@@ -128,6 +128,8 @@ fn main() -> Result<()> {
     let mut intid = 0;
     let mut binin = BufReader::new(File::open(args.out_prefix.clone() + ".tmp")?);
     binout = BufWriter::new(File::create(args.out_prefix.clone() + ".ftr")?);
+    let libdb_fn = args.out_prefix.to_string() + ".lib";
+    let mut lib = DocsDb::create(&libdb_fn);
 
     while let Ok(fv) = FeatureVec::read_from(&mut binin) {
         let mut new_fv = FeatureVec::new(fv.docid.clone());
@@ -144,20 +146,24 @@ fn main() -> Result<()> {
         library.docs[intid].offset = binout.stream_position().unwrap();
         bincode::serialize_into(&mut binout, &new_fv).expect("Error writing to final bin file");
         binout.flush()?;
+
+        lib.insert_batch(&library.docs[intid].docid, &library.docs[intid], 100_000);
+
         intid += 1;
         progress.update(1);
     }
     binout.flush()?;
     remove_file(args.out_prefix.to_string() + ".tmp")?;
 
-    let libdb_fn = args.out_prefix.to_string() + ".lib";
-    let lib = DocsDb::create(&libdb_fn);
-    progress = Bar::new(library.m.len());
-    for (docid, intid) in library.m.drain() {
-        let di = library.docs.get(intid).unwrap();
-        lib.insert_batch(&docid, &di, 100_000);
-        progress.update(1);
-    }
+    // let libdb_fn = args.out_prefix.to_string() + ".lib";
+    // let mut lib = DocsDb::create(&libdb_fn);
+    // progress = Bar::new(library.m.len());
+    // for (docid, intid) in library.m.drain() {
+    //     let di = library.docs.get(intid).unwrap();
+    //     lib.insert_batch(&docid, &di, 100_000);
+    //     progress.update(1);
+    // }
+    // lib.process_remaining();
 
     new_dict.save(&(args.out_prefix + ".dct"))?;
 

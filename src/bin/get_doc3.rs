@@ -1,12 +1,12 @@
 use clap::Parser;
-use mycal::{Docs, FeatureVec};
+use mycal::{DocsDb, FeatureVec};
 use std::fs::File;
 use std::io::{BufReader, Result, Seek, SeekFrom};
 use std::path::Path;
 
 #[derive(Parser)]
-#[command(name = "get_doc")]
-#[command(about = "Fetch a feature vector given a docid, serialized hashmaps version.")]
+#[command(name = "get_doc2")]
+#[command(about = "Fetch a feature vector given a docid, sled version.")]
 struct Cli {
     coll_prefix: String,
     docid: String,
@@ -20,17 +20,18 @@ fn main() -> Result<()> {
     let docs_file = root.join(format!("{}.lib", args.coll_prefix));
     let feat_file = root.join(format!("{}.ftr", args.coll_prefix));
 
-    println!("Reading lib structure...");
-    let docs_fp = BufReader::new(File::open(docs_file)?);
-    let docs: Docs = bincode::deserialize_from(docs_fp).unwrap();
+    println!("Opening lb2 database...");
+    let docs = DocsDb::open(docs_file.to_str().unwrap());
+    // let db = Config::new(docs_file);
+    // let store = Store::new(db).unwrap();
+    // let bucket = store
+    //    .bucket::<String, Bincode<DocInfo>>(Some("docinfo"))
+    //    .unwrap();
 
-    let intid = match docs.get_intid(&args.docid) {
-        Some(i) => i,
-        None => panic!("Docid {} not found", args.docid),
-    };
-    let docinfo = match docs.docs.get(*intid) {
+    println!("Fetching docinfo...");
+    let docinfo = match docs.get(&args.docid) {
         Some(di) => di,
-        None => panic!("Document {} not found", intid),
+        None => panic!("Document {} not found", args.docid),
     };
 
     println!("Looking up features...");
@@ -38,7 +39,7 @@ fn main() -> Result<()> {
     feat_fp.seek(SeekFrom::Start(docinfo.offset))?;
 
     let fv: FeatureVec = bincode::deserialize_from(feat_fp).unwrap();
-    println!("Doc {} ({}): {:?}", args.docid, intid, fv);
+    println!("Doc {} ({}): {:?}", args.docid, docinfo.intid, fv);
 
     Ok(())
 }

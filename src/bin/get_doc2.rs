@@ -6,6 +6,8 @@ use std::io::{BufReader, Result, Seek, SeekFrom};
 use std::path::Path;
 
 #[derive(Parser)]
+#[command(name = "get_doc2")]
+#[command(about = "Fetch a feature vector given a docid, kv version.")]
 struct Cli {
     coll_prefix: String,
     docid: String,

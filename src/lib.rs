@@ -3,7 +3,6 @@ use porter_stemmer::stem;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use serde::{Deserialize, Serialize};
-use sled;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Write};
@@ -72,25 +71,39 @@ impl DocsDb {
         self.db.insert(docid, dib).ok().unwrap()
     }
 
-    pub fn insert_batch(mut self, docid: &str, di: &DocInfo, batch_size: usize) {
+    pub fn insert_batch(&mut self, docid: &str, di: &DocInfo, batch_size: usize) {
         let dib = bincode::serialize(di).unwrap();
         if self.batch_len > batch_size {
-            self.db.apply_batch(self.batch).expect("Batch apply fail");
-            self.batch = sled::Batch::default();
+            // We need to use swap because apply_batch consumes the batch
+            let mut local_batch = sled::Batch::default();
+            std::mem::swap(&mut local_batch, &mut self.batch);
+            self.db.apply_batch(local_batch).expect("Batch apply fail");
+            self.batch_len = 0;
         }
         self.batch.insert(docid, dib);
+        self.batch_len += 1;
+    }
+
+    pub fn process_remaining(&mut self) {
+        if self.batch_len > 0 {
+            let mut batch_to_send = sled::Batch::default();
+            std::mem::swap(&mut batch_to_send, &mut self.batch);
+            self.db
+                .apply_batch(batch_to_send)
+                .expect("Batch apply fail");
+            self.batch_len = 0;
+        }
     }
 
     pub fn insert_iter(
-        self,
+        &mut self,
         library: &Docs,
         stuff: impl Iterator<Item = (String, usize)>,
     ) -> Result<()> {
-        for (docid, intid) in stuff {
+        stuff.for_each(|(docid, intid)| {
             let di = library.docs.get(intid).unwrap();
             self.insert_batch(&docid, &di, 100_000);
-        }
-
+        });
         Ok(())
     }
 
