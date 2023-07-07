@@ -1,5 +1,5 @@
 use clap::{Arg, ArgMatches, Command};
-use mycal::{Classifier, Dict, DocsDb, FeatureVec};
+use mycal::{Classifier, Dict, DocInfo, DocsDb, FeatureVec};
 use std::error::Error;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
@@ -75,9 +75,10 @@ fn train_qrels(
         })
         .for_each(|fields: Vec<String>| {
             println!("{:?}", fields);
-            let di = docs.db.get(&fields[2].to_string()).unwrap().unwrap();
+            let dib = docs.db.get(&fields[2]).unwrap().unwrap();
+            let di: DocInfo = bincode::deserialize(&dib).unwrap();
             feats
-                .seek(SeekFrom::Start(di.0.offset))
+                .seek(SeekFrom::Start(di.offset))
                 .expect("Seek error in feats");
             let fv = FeatureVec::read_from(&mut feats).expect("Error reading feature vector");
             let rel = i32::from_str(&fields[3]).unwrap();

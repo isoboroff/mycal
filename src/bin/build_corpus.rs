@@ -1,8 +1,7 @@
 use clap::Parser;
 use flate2::read;
 use kdam::{tqdm, Bar, BarExt};
-use kv;
-use mycal::{tokenize, Dict, DocInfo, Docs, DocsDb, FeatureVec};
+use mycal::{tokenize, Dict, Docs, DocsDb, FeatureVec};
 use serde_json::{from_str, Map, Value};
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -152,16 +151,11 @@ fn main() -> Result<()> {
     remove_file(args.out_prefix.to_string() + ".tmp")?;
 
     let libdb_fn = args.out_prefix.to_string() + ".lib";
-    let lib = DocsDb::open(&libdb_fn);
+    let lib = DocsDb::create(&libdb_fn);
     progress = Bar::new(library.m.len());
     for (docid, intid) in library.m.drain() {
         let di = library.docs.get(intid).unwrap();
-        let dib = kv::Bincode(DocInfo {
-            intid: di.intid,
-            docid: di.docid.clone(),
-            offset: di.offset,
-        });
-        lib.db.set(&docid, &dib).expect("Could not insert into db");
+        lib.insert_batch(&docid, &di, 100_000);
         progress.update(1);
     }
 

@@ -1,9 +1,9 @@
 use bincode::Result;
-use kv;
 use porter_stemmer::stem;
 use rand::seq::SliceRandom;
 use rand::thread_rng;
 use serde::{Deserialize, Serialize};
+use sled;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Write};
@@ -15,33 +15,94 @@ pub struct DocInfo {
     pub offset: u64,
 }
 
-pub struct DocsDb<'a> {
+pub struct DocsDb {
     pub filename: String,
-    pub db: kv::Bucket<'a, String, kv::Bincode<DocInfo>>,
+    pub db: sled::Db,
     pub next_intid: usize,
+
+    batch: sled::Batch,
+    batch_len: usize,
 }
 
-impl DocsDb<'_> {
+impl DocsDb {
     pub fn open(filename: &str) -> DocsDb {
-        let conf = kv::Config::new(&filename);
-        let store = kv::Store::new(conf).unwrap();
-        let bucket = store
-            .bucket::<String, kv::Bincode<DocInfo>>(Some("docinfo"))
-            .unwrap();
+        let conf = sled::Config::default()
+            .path(filename.to_owned())
+            .cache_capacity(10_000_000)
+            .use_compression(false)
+            .mode(sled::Mode::LowSpace);
+        let db = conf.open().unwrap();
 
         DocsDb {
             filename: filename.to_string(),
-            db: bucket,
+            db,
             next_intid: 0,
+            batch: sled::Batch::default(),
+            batch_len: 0,
         }
+    }
+
+    pub fn create(filename: &str) -> DocsDb {
+        let conf = sled::Config::default()
+            .path(filename.to_owned())
+            .cache_capacity(10_000_000)
+            .use_compression(false)
+            .mode(sled::Mode::HighThroughput);
+        let db = conf.open().unwrap();
+
+        DocsDb {
+            filename: filename.to_string(),
+            db,
+            next_intid: 0,
+            batch: sled::Batch::default(),
+            batch_len: 0,
+        }
+    }
+
+    pub fn get(&self, docid: &str) -> Option<DocInfo> {
+        self.db
+            .get(docid)
+            .unwrap()
+            .map(|ivec| bincode::deserialize(&ivec).unwrap())
+    }
+
+    pub fn insert(&self, docid: &str, di: &DocInfo) -> Option<sled::IVec> {
+        let dib = bincode::serialize(di).unwrap();
+        // not happy about the error reporting here...
+        self.db.insert(docid, dib).ok().unwrap()
+    }
+
+    pub fn insert_batch(mut self, docid: &str, di: &DocInfo, batch_size: usize) {
+        let dib = bincode::serialize(di).unwrap();
+        if self.batch_len > batch_size {
+            self.db.apply_batch(self.batch).expect("Batch apply fail");
+            self.batch = sled::Batch::default();
+        }
+        self.batch.insert(docid, dib);
+    }
+
+    pub fn insert_iter(
+        self,
+        library: &Docs,
+        stuff: impl Iterator<Item = (String, usize)>,
+    ) -> Result<()> {
+        for (docid, intid) in stuff {
+            let di = library.docs.get(intid).unwrap();
+            self.insert_batch(&docid, &di, 100_000);
+        }
+
+        Ok(())
     }
 
     pub fn get_intid(&self, docid: &str) -> Option<usize> {
         let tmp_docid = docid.to_string();
-        let docinfo = self.db.get(&tmp_docid);
+        let docinfo = self.db.get(tmp_docid).unwrap();
         match docinfo {
-            Ok(di) => Some(di.unwrap().0.intid),
-            _ => None,
+            Some(bytes) => {
+                let di: DocInfo = bincode::deserialize(&bytes).unwrap();
+                Some(di.intid)
+            }
+            None => None,
         }
     }
 
@@ -49,19 +110,23 @@ impl DocsDb<'_> {
         let tmp_docid = docid.to_string();
         match self.db.get(&tmp_docid) {
             Ok(di) => match di {
-                Some(di) => Some(di.0.intid),
+                Some(di) => {
+                    let ddi: DocInfo = bincode::deserialize(&di).unwrap();
+                    Some(ddi.intid)
+                }
                 None => None,
             },
             _ => {
                 let intid = self.next_intid;
                 self.next_intid = intid + 1;
-                let new_di = kv::Bincode(DocInfo {
+                let new_di = DocInfo {
                     intid,
                     docid: tmp_docid.clone(),
                     offset: 0,
-                });
+                };
+                let sdi = bincode::serialize(&new_di).unwrap();
                 self.db
-                    .set(&tmp_docid, &new_di)
+                    .insert(&tmp_docid, sdi)
                     .expect("Could not insert DocInfo into db");
                 Some(intid)
             }
