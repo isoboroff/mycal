@@ -297,10 +297,10 @@ pub struct Classifier {
 }
 
 impl Classifier {
-    pub fn new(dimensionality: usize, lambda: f32, num_iters: u32) -> Classifier {
+    pub fn new(dimensionality: usize, num_iters: u32) -> Classifier {
         Classifier {
             w: vec![0.0; dimensionality + 1],
-            lambda,
+            lambda: 0.0001,
             num_iters,
             scale: 1.0,
             squared_norm: 0.0,
@@ -323,15 +323,15 @@ impl Classifier {
         let mut rng = thread_rng();
 
         for i in 0..self.num_iters {
-            let eta = 1.0 / (self.lambda * i as f32);
+            let eta = 1.0 / (self.lambda * (i + 1) as f32);
             let a = positives.choose(&mut rng).unwrap();
             let b = negatives.choose(&mut rng).unwrap();
 
             let y = 1.0;
             let mut loss = self.inner_product_on_difference(a, b);
-            loss *= 1.0 * y;
+            loss *= y;
             loss = loss.exp();
-            loss = y / loss;
+            loss = y / (1.0 + loss);
 
             // Regularize
             let scaling_factor = 1.0 - (eta * self.lambda);
@@ -352,8 +352,9 @@ impl Classifier {
 
     pub fn inner_product(&self, x: &FeatureVec) -> f32 {
         let mut prod = 0.0;
-        for (i, _feat) in x.features.iter().enumerate() {
-            prod += self.w[x.feature_at(i)] * x.value_at(i);
+        for feat in x.features.iter() {
+            prod += self.w[feat.id] * feat.value;
+            println!("{:?} * {:?} added, {:?}", self.w[feat.id], feat, prod);
         }
         prod * self.scale
     }
@@ -385,9 +386,9 @@ impl Classifier {
     fn add_vector(&mut self, x: &FeatureVec, x_scale: &f32) {
         let mut inner_product = 0.0;
 
-        for (i, _feat) in x.features.iter().enumerate() {
-            let this_x_value = x.value_at(i) * x_scale;
-            let this_x_feature = x.feature_at(i);
+        for (feat) in x.features.iter() {
+            let this_x_value = feat.value * x_scale;
+            let this_x_feature = feat.id;
             inner_product += self.w[this_x_feature] * this_x_value;
             self.w[this_x_feature] += this_x_value / self.scale;
         }
