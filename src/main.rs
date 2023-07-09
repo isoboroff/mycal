@@ -39,6 +39,15 @@ fn cli() -> Command {
                         .help("Number of top-scoring documents to retrieve"),
                 ),
         )
+        .subcommand(
+            Command::new("score_one")
+                .about("Score one document, by docid")
+                .arg(
+                    Arg::new("docid")
+                        .help("A document identifier")
+                        .required(true),
+                ),
+        )
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -52,6 +61,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         Some(("score", score_args)) => {
             score_collection(coll_prefix, model_file, score_args)?;
+        }
+        Some(("score_one", score_one_args)) => {
+            score_one_doc(coll_prefix, model_file, score_one_args)?;
         }
         Some((&_, _)) => panic!("No subcommand specified"),
         None => panic!("No subcommand specified"),
@@ -75,7 +87,7 @@ fn train_qrels(
     if model_path.exists() {
         model = Classifier::load(model_file).unwrap();
     } else {
-        model = Classifier::new(dict.m.len(), 1.0, 100);
+        model = Classifier::new(dict.m.len(), 100);
     }
 
     let docs = DocsDb::open(&docsdb_file);
@@ -169,4 +181,29 @@ fn score_collection(
     println!("{:?}", &top);
 
     Ok(top)
+}
+
+fn score_one_doc(
+    coll_prefix: &str,
+    model_file: &str,
+    score_one_args: &ArgMatches,
+) -> Result<f32, std::io::Error> {
+    let docid = score_one_args.get_one::<String>("docid").unwrap();
+
+    let docsdb_file = coll_prefix.to_string() + ".lib";
+    let feat_file = coll_prefix.to_string() + ".ftr";
+
+    let model = Classifier::load(model_file).unwrap();
+
+    let docs = DocsDb::open(&docsdb_file);
+    let mut feats = BufReader::new(File::open(feat_file).expect("Could not open feature file"));
+
+    let dib = docs.db.get(docid).unwrap().unwrap();
+    let di: DocInfo = bincode::deserialize(&dib).unwrap();
+    feats.seek(SeekFrom::Start(di.offset))?;
+    let fv = FeatureVec::read_from(&mut feats).expect("Error deserializing feature vec");
+
+    let score = model.inner_product(&fv);
+    println!("{:?}", score);
+    Ok(score)
 }
