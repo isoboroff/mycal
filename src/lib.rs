@@ -335,15 +335,15 @@ impl Classifier {
 
             // Regularize
             let scaling_factor = 1.0 - (eta * self.lambda);
-            self.scale_by(&scaling_factor);
+            self.scale_by(scaling_factor);
 
-            self.add_vector(&a, &(eta * loss));
-            self.add_vector(&b, &(-1.0 * eta * loss));
+            self.add_vector(a, eta * loss);
+            self.add_vector(b, -1.0 * eta * loss);
 
             // Pegasos projection
             let projection_val = 1.0 / (self.lambda * self.squared_norm).sqrt();
             if projection_val < 1.0 {
-                self.scale_by(&projection_val);
+                self.scale_by(projection_val);
             }
         }
 
@@ -360,7 +360,10 @@ impl Classifier {
     }
 
     pub fn inner_product_on_difference(&self, a: &FeatureVec, b: &FeatureVec) -> f32 {
-        self.inner_product(a) - self.inner_product(b)
+        let mut prod = 0.0;
+        prod += self.inner_product(a);
+        prod += self.inner_product(b) * -1.0;
+        prod
     }
 
     fn scale_to_one(&mut self) {
@@ -372,21 +375,21 @@ impl Classifier {
 
     const MIN_SCALE: f32 = 0.00000000001;
 
-    fn scale_by(&mut self, scaling_factor: &f32) {
+    fn scale_by(&mut self, scaling_factor: f32) {
         if self.scale < Self::MIN_SCALE {
             self.scale_to_one();
         }
-        self.squared_norm *= *scaling_factor * *scaling_factor;
+        self.squared_norm *= scaling_factor * scaling_factor;
 
-        if scaling_factor > &0.0 {
-            self.scale *= *scaling_factor;
+        if scaling_factor > 0.0 {
+            self.scale *= scaling_factor;
         }
     }
 
-    fn add_vector(&mut self, x: &FeatureVec, x_scale: &f32) {
+    fn add_vector(&mut self, x: &FeatureVec, x_scale: f32) {
         let mut inner_product = 0.0;
 
-        for (feat) in x.features.iter() {
+        for feat in x.features.iter() {
             let this_x_value = feat.value * x_scale;
             let this_x_feature = feat.id;
             inner_product += self.w[this_x_feature] * this_x_value;
