@@ -354,7 +354,6 @@ impl Classifier {
         let mut prod = 0.0;
         for feat in x.features.iter() {
             prod += self.w[feat.id] * feat.value;
-            println!("{:?} * {:?} added, {:?}", self.w[feat.id], feat, prod);
         }
         prod * self.scale
     }
