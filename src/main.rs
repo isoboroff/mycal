@@ -1,5 +1,5 @@
 use clap::{Arg, ArgMatches, Command};
-use kdam::{tqdm, Bar, BarExt};
+use kdam::{tqdm, BarExt, RowManager};
 use min_max_heap::MinMaxHeap;
 use mycal::{Classifier, Dict, DocInfo, DocsDb, FeatureVec};
 use ordered_float::OrderedFloat;
@@ -9,6 +9,8 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::Path;
 use std::str::FromStr;
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread::{self, JoinHandle};
 use std::vec::Vec;
 
 fn cli() -> Command {
@@ -125,7 +127,7 @@ fn train_qrels(
     Ok(model)
 }
 
-#[derive(Eq, Debug)]
+#[derive(Eq, Debug, Clone)]
 struct DocScore {
     docid: String,
     score: OrderedFloat<f32>,
@@ -133,13 +135,13 @@ struct DocScore {
 
 impl Ord for DocScore {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.score.cmp(&other.score)
+        self.score.cmp(&other.score).reverse()
     }
 }
 
 impl PartialOrd for DocScore {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
+        Some(self.cmp(other).reverse())
     }
 }
 
@@ -147,6 +149,97 @@ impl PartialEq for DocScore {
     fn eq(&self, other: &Self) -> bool {
         self.score == other.score
     }
+}
+
+fn score_inner(
+    feat_file: String,
+    model: &Arc<Classifier>,
+    cut: u64,
+    next_cut: u64,
+    num_scores: usize,
+    //kdam_mgr: &mut MutexGuard<RowManager>,
+) -> MinMaxHeap<DocScore> {
+    let mut feats = BufReader::new(File::open(feat_file).expect("Can't open feature file"));
+    let mut top_scores = MinMaxHeap::new();
+    let total = (next_cut - cut) as usize;
+
+    feats
+        .seek(SeekFrom::Start(cut))
+        .expect("Error seeking in feature file");
+    while let Ok(fv) = FeatureVec::read_from(&mut feats) {
+        if feats.get_ref().stream_position().unwrap() > next_cut {
+            break;
+        }
+        let score = model.inner_product(&fv);
+        top_scores.push(DocScore {
+            docid: fv.docid,
+            score: OrderedFloat(score),
+        });
+
+        while top_scores.len() > num_scores {
+            top_scores.pop_min();
+        }
+        //kdam_mgr.get_mut(0).unwrap().update(1);
+    }
+    top_scores
+}
+
+fn score_collection_multithreaded(
+    coll_prefix: &str,
+    model_file: &str,
+    score_args: &ArgMatches,
+) -> Result<Vec<DocScore>, std::io::Error> {
+    let model = Arc::new(Classifier::load(model_file).unwrap());
+    let n = score_args.get_one::<usize>("num_scores").unwrap();
+
+    let feat_file = coll_prefix.to_string() + ".ftr";
+    let cuts_file = coll_prefix.to_string() + ".cut";
+
+    let cuts = if Path::new(&cuts_file).exists() {
+        let cuts_fp = BufReader::new(File::open(cuts_file)?);
+        cuts_fp
+            .lines()
+            .map(|s| str::parse(&s.unwrap()).unwrap())
+            .collect()
+    } else {
+        vec![0, 0]
+    };
+    let cuts_pairs = cuts.iter().zip(cuts.iter().skip(1));
+
+    // let mut pbs = RowManager::new(cuts_pairs.len() as u16);
+    // for (i, (cut, next_cut)) in cuts_pairs.clone().enumerate() {
+    //     pbs.append(tqdm!(
+    //         total = (next_cut - cut) as usize,
+    //         leave = false,
+    //         desc = format!("Thread {}", i),
+    //         force_refresh = true
+    //     ));
+    // }
+    // let pbs: Arc<Mutex<RowManager>> = Arc::new(Mutex::new(pbs));
+
+    let mut handles: Vec<JoinHandle<MinMaxHeap<DocScore>>> = vec![];
+    for (&cut, &next_cut) in cuts_pairs {
+        // let pbs1 = pbs.clone();
+        let model = model.clone();
+        let n = *n;
+        let feat_file = feat_file.clone();
+        let handle = thread::spawn(move || {
+            // let mut pbs = pbs1.lock().unwrap();
+            println!("Forking {}", cut);
+            score_inner(feat_file, &model, cut, next_cut, n) //, &mut pbs)
+        });
+        handles.push(handle);
+    }
+
+    let mut top_scores = vec![];
+    for heap in handles {
+        top_scores.extend_from_slice(&heap.join().unwrap().into_vec_desc());
+    }
+    top_scores.sort();
+    top_scores.truncate(*n);
+    println!("{:?}", top_scores);
+
+    Ok(top_scores)
 }
 
 fn score_collection(
