@@ -3,7 +3,10 @@ use kdam::{tqdm, BarExt, RowManager};
 use min_max_heap::MinMaxHeap;
 use mycal::{Classifier, Dict, DocInfo, DocsDb, FeatureVec};
 use ordered_float::OrderedFloat;
+use rand::distributions::Uniform;
+use rand::{thread_rng, Rng};
 use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::error::Error;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
@@ -27,7 +30,15 @@ fn cli() -> Command {
         .subcommand(
             Command::new("qrels")
                 .about("Apply the given qrels file as training examples")
-                .arg(Arg::new("qrels_file").help("The qrels file")),
+                .arg(Arg::new("qrels_file").help("The qrels file"))
+                .arg(
+                    Arg::new("negatives")
+                        .short('n')
+                        .long("negatives")
+                        .value_parser(clap::value_parser!(usize))
+                        .default_value("0")
+                        .help("Add n randomly-sampled documents as nonrelevant."),
+                ),
         )
         .subcommand(
             Command::new("score")
@@ -100,6 +111,8 @@ fn train_qrels(
     let qrels = BufReader::new(File::open(qrels_file).expect("Could not open qrels file"));
     let mut pos = Vec::new();
     let mut neg = Vec::new();
+    let mut using = HashSet::new();
+
     qrels
         .lines()
         .map(|line| {
@@ -108,6 +121,7 @@ fn train_qrels(
         })
         .for_each(|fields: Vec<String>| {
             println!("{:?}", fields);
+            using.insert(fields[2].clone());
             let dib = docs.db.get(&fields[2]).unwrap().unwrap();
             let di: DocInfo = bincode::deserialize(&dib).unwrap();
             feats
@@ -121,6 +135,50 @@ fn train_qrels(
                 pos.push(fv);
             };
         });
+
+    let num_neg = qrels_args.get_one::<usize>("negatives").unwrap();
+    if *num_neg > 0 {
+        // Use a reservoir sampler to draw num_neg unused documents from the
+        // DocsDb.
+        let mut neg_sample = vec![];
+        let mut rng = rand::thread_rng();
+        let uniform = Uniform::new(0.0, 1.0);
+        let mut next_to_sample: i32 = -1;
+        let mut wt: f64 = f64::exp(f64::log10(rng.sample(uniform)) / *num_neg as f64);
+        docs.db.iter().enumerate().for_each(|(i, res)| {
+            let (k, v) = res.unwrap();
+            let key = String::from_utf8(k.to_vec()).unwrap();
+            let di = bincode::deserialize::<DocInfo>(&v).unwrap();
+            if using.contains(&key) {
+                return;
+            }
+
+            if i <= *num_neg {
+                neg_sample.push(di);
+                return;
+            }
+
+            if i > next_to_sample as usize {
+                next_to_sample = (i as f64
+                    + (f64::floor(f64::log10(rng.sample(uniform)) / f64::log10(1.0 - wt)))
+                    + 1.0) as i32;
+            }
+            if i == next_to_sample as usize {
+                let replace = rng.gen_range(0..neg_sample.len());
+                neg_sample[replace] = di;
+                wt *= f64::exp(f64::log10(rng.sample(uniform)) / *num_neg as f64);
+            }
+        });
+
+        neg_sample.iter().for_each(|di| {
+            println!("{:?}", di);
+            feats
+                .seek(SeekFrom::Start(di.offset))
+                .expect("Seek error in feats");
+            let fv = FeatureVec::read_from(&mut feats).expect("Error reading feature vector");
+            neg.push(fv);
+        });
+    }
 
     model.train(&pos, &neg);
     model.save(model_file)?;
@@ -149,97 +207,6 @@ impl PartialEq for DocScore {
     fn eq(&self, other: &Self) -> bool {
         self.score == other.score
     }
-}
-
-fn score_inner(
-    feat_file: String,
-    model: &Arc<Classifier>,
-    cut: u64,
-    next_cut: u64,
-    num_scores: usize,
-    //kdam_mgr: &mut MutexGuard<RowManager>,
-) -> MinMaxHeap<DocScore> {
-    let mut feats = BufReader::new(File::open(feat_file).expect("Can't open feature file"));
-    let mut top_scores = MinMaxHeap::new();
-    let total = (next_cut - cut) as usize;
-
-    feats
-        .seek(SeekFrom::Start(cut))
-        .expect("Error seeking in feature file");
-    while let Ok(fv) = FeatureVec::read_from(&mut feats) {
-        if feats.get_ref().stream_position().unwrap() > next_cut {
-            break;
-        }
-        let score = model.inner_product(&fv);
-        top_scores.push(DocScore {
-            docid: fv.docid,
-            score: OrderedFloat(score),
-        });
-
-        while top_scores.len() > num_scores {
-            top_scores.pop_min();
-        }
-        //kdam_mgr.get_mut(0).unwrap().update(1);
-    }
-    top_scores
-}
-
-fn score_collection_multithreaded(
-    coll_prefix: &str,
-    model_file: &str,
-    score_args: &ArgMatches,
-) -> Result<Vec<DocScore>, std::io::Error> {
-    let model = Arc::new(Classifier::load(model_file).unwrap());
-    let n = score_args.get_one::<usize>("num_scores").unwrap();
-
-    let feat_file = coll_prefix.to_string() + ".ftr";
-    let cuts_file = coll_prefix.to_string() + ".cut";
-
-    let cuts = if Path::new(&cuts_file).exists() {
-        let cuts_fp = BufReader::new(File::open(cuts_file)?);
-        cuts_fp
-            .lines()
-            .map(|s| str::parse(&s.unwrap()).unwrap())
-            .collect()
-    } else {
-        vec![0, 0]
-    };
-    let cuts_pairs = cuts.iter().zip(cuts.iter().skip(1));
-
-    // let mut pbs = RowManager::new(cuts_pairs.len() as u16);
-    // for (i, (cut, next_cut)) in cuts_pairs.clone().enumerate() {
-    //     pbs.append(tqdm!(
-    //         total = (next_cut - cut) as usize,
-    //         leave = false,
-    //         desc = format!("Thread {}", i),
-    //         force_refresh = true
-    //     ));
-    // }
-    // let pbs: Arc<Mutex<RowManager>> = Arc::new(Mutex::new(pbs));
-
-    let mut handles: Vec<JoinHandle<MinMaxHeap<DocScore>>> = vec![];
-    for (&cut, &next_cut) in cuts_pairs {
-        // let pbs1 = pbs.clone();
-        let model = model.clone();
-        let n = *n;
-        let feat_file = feat_file.clone();
-        let handle = thread::spawn(move || {
-            // let mut pbs = pbs1.lock().unwrap();
-            println!("Forking {}", cut);
-            score_inner(feat_file, &model, cut, next_cut, n) //, &mut pbs)
-        });
-        handles.push(handle);
-    }
-
-    let mut top_scores = vec![];
-    for heap in handles {
-        top_scores.extend_from_slice(&heap.join().unwrap().into_vec_desc());
-    }
-    top_scores.sort();
-    top_scores.truncate(*n);
-    println!("{:?}", top_scores);
-
-    Ok(top_scores)
 }
 
 fn score_collection(
