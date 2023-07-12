@@ -11,6 +11,7 @@ use std::error::Error;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::Path;
+use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
@@ -138,46 +139,31 @@ fn train_qrels(
 
     let num_neg = qrels_args.get_one::<usize>("negatives").unwrap();
     if *num_neg > 0 {
-        // Use a reservoir sampler to draw num_neg unused documents from the
-        // DocsDb.
-        let mut neg_sample = vec![];
+
+        let docvec_file = coll_prefix.to_string() + ".dvc";
+        let docvec_fp = BufReader::new(File::open(docvec_file)?);
+        let docvec: Vec<DocInfo> = bincode::deserialize_from(docvec_fp).unwrap();
+        let numdocs = docvec.len();
         let mut rng = rand::thread_rng();
-        let uniform = Uniform::new(0.0, 1.0);
-        let mut next_to_sample: i32 = -1;
-        let mut wt: f64 = f64::exp(f64::log10(rng.sample(uniform)) / *num_neg as f64);
-        docs.db.iter().enumerate().for_each(|(i, res)| {
-            let (k, v) = res.unwrap();
-            let key = String::from_utf8(k.to_vec()).unwrap();
-            let di = bincode::deserialize::<DocInfo>(&v).unwrap();
-            if using.contains(&key) {
-                return;
-            }
+        let uniform = Uniform::new(0, numdocs as usize);
 
-            if i <= *num_neg {
-                neg_sample.push(di);
-                return;
-            }
-
-            if i > next_to_sample as usize {
-                next_to_sample = (i as f64
-                    + (f64::floor(f64::log10(rng.sample(uniform)) / f64::log10(1.0 - wt)))
-                    + 1.0) as i32;
-            }
-            if i == next_to_sample as usize {
-                let replace = rng.gen_range(0..neg_sample.len());
-                neg_sample[replace] = di;
-                wt *= f64::exp(f64::log10(rng.sample(uniform)) / *num_neg as f64);
-            }
-        });
-
-        neg_sample.iter().for_each(|di| {
-            println!("{:?}", di);
-            feats
-                .seek(SeekFrom::Start(di.offset))
-                .expect("Seek error in feats");
-            let fv = FeatureVec::read_from(&mut feats).expect("Error reading feature vector");
-            neg.push(fv);
-        });
+        (&mut rng).sample_iter(uniform)
+            .take(*num_neg)
+            .map(|mut i| {
+                let mut my_mut_rng = rand::thread_rng();
+                while using.contains(&docvec[i].docid) {
+                    i = (&mut my_mut_rng).sample(uniform);
+                }
+                using.insert(docvec[i].docid.clone());
+                docvec[i].offset
+            })
+            .for_each(|offset| {
+                feats
+                    .seek(SeekFrom::Start(offset))
+                    .expect("Seek error in feats");
+                let fv = FeatureVec::read_from(&mut feats).expect("Error reading feature vector");
+                neg.push(fv);
+            });
     }
 
     model.train(&pos, &neg);
