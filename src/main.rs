@@ -1,20 +1,17 @@
 use clap::{Arg, ArgMatches, Command};
-use kdam::{tqdm, BarExt, RowManager};
+use kdam::{tqdm, BarExt};
 use min_max_heap::MinMaxHeap;
 use mycal::{Classifier, Dict, DocInfo, DocsDb, FeatureVec};
 use ordered_float::OrderedFloat;
 use rand::distributions::Uniform;
-use rand::{thread_rng, Rng};
+use rand::{Rng};
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::error::Error;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::Path;
-use std::rc::Rc;
 use std::str::FromStr;
-use std::sync::{Arc, Mutex, MutexGuard};
-use std::thread::{self, JoinHandle};
 use std::vec::Vec;
 
 fn cli() -> Command {
@@ -116,6 +113,7 @@ fn train_qrels(
 
     qrels
         .lines()
+        .filter(|result| !result.as_ref().unwrap().starts_with('#'))
         .map(|line| {
             let line = line.unwrap();
             line.split_whitespace().map(|x| x.to_string()).collect()
@@ -165,6 +163,7 @@ fn train_qrels(
                 neg.push(fv);
             });
     }
+    println!("Random negative samples ({}): {:?}", num_neg, using);
 
     model.train(&pos, &neg);
     model.save(model_file)?;
@@ -224,7 +223,7 @@ fn score_collection(
     }
 
     let top = top_scores.into_vec_desc();
-    println!("{:?}", &top);
+    top.iter().for_each(|ds| println!("{} {}", ds.docid, ds.score));
 
     Ok(top)
 }
