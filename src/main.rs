@@ -4,7 +4,7 @@ use min_max_heap::MinMaxHeap;
 use mycal::{Classifier, Dict, DocInfo, DocsDb, FeatureVec};
 use ordered_float::OrderedFloat;
 use rand::distributions::Uniform;
-use rand::{Rng};
+use rand::Rng;
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::error::Error;
@@ -26,7 +26,7 @@ fn cli() -> Command {
         )
         .arg(Arg::new("model").help("The model file").required(true))
         .subcommand(
-            Command::new("qrels")
+            Command::new("train")
                 .about("Apply the given qrels file as training examples")
                 .arg(Arg::new("qrels_file").help("The qrels file"))
                 .arg(
@@ -48,6 +48,12 @@ fn cli() -> Command {
                         .value_parser(clap::value_parser!(usize))
                         .default_value("100")
                         .help("Number of top-scoring documents to retrieve"),
+                )
+                .arg(
+                    Arg::new("exclude")
+                        .short('e')
+                        .long("exclude")
+                        .help("Qrels file of documents to exclude"),
                 ),
         )
         .subcommand(
@@ -67,7 +73,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let model_file = args.get_one::<String>("model").unwrap();
 
     match args.subcommand() {
-        Some(("qrels", qrels_args)) => {
+        Some(("train", qrels_args)) => {
             train_qrels(coll_prefix, model_file, qrels_args)?;
         }
         Some(("score", score_args)) => {
@@ -98,7 +104,7 @@ fn train_qrels(
     if model_path.exists() {
         model = Classifier::load(model_file).unwrap();
     } else {
-        model = Classifier::new(dict.m.len(), 100);
+        model = Classifier::new(dict.m.len(), 200000);
     }
 
     let docs = DocsDb::open(&docsdb_file);
@@ -119,25 +125,28 @@ fn train_qrels(
             line.split_whitespace().map(|x| x.to_string()).collect()
         })
         .for_each(|fields: Vec<String>| {
-            println!("{:?}", fields);
             using.insert(fields[2].clone());
             let dib = docs.db.get(&fields[2]).unwrap().unwrap();
             let di: DocInfo = bincode::deserialize(&dib).unwrap();
             feats
                 .seek(SeekFrom::Start(di.offset))
                 .expect("Seek error in feats");
-            let fv = FeatureVec::read_from(&mut feats).expect("Error reading feature vector");
+            let mut fv = FeatureVec::read_from(&mut feats).expect("Error reading feature vector");
+            if fv.squared_norm == 0.0 {
+                fv.compute_norm();
+            }
             let rel = i32::from_str(&fields[3]).unwrap();
             if rel <= 0 {
                 neg.push(fv);
+                println!("qrels-neg {} {}", fields[2], fields[3]);
             } else {
                 pos.push(fv);
+                println!("qrels-pos {} {}", fields[2], fields[3]);
             };
         });
 
     let num_neg = qrels_args.get_one::<usize>("negatives").unwrap();
     if *num_neg > 0 {
-
         let docvec_file = coll_prefix.to_string() + ".dvc";
         let docvec_fp = BufReader::new(File::open(docvec_file)?);
         let docvec: Vec<DocInfo> = bincode::deserialize_from(docvec_fp).unwrap();
@@ -145,7 +154,8 @@ fn train_qrels(
         let mut rng = rand::thread_rng();
         let uniform = Uniform::new(0, numdocs as usize);
 
-        (&mut rng).sample_iter(uniform)
+        (&mut rng)
+            .sample_iter(uniform)
             .take(*num_neg)
             .map(|mut i| {
                 let mut my_mut_rng = rand::thread_rng();
@@ -153,6 +163,7 @@ fn train_qrels(
                     i = (&mut my_mut_rng).sample(uniform);
                 }
                 using.insert(docvec[i].docid.clone());
+                println!("samp-neg {} {}", docvec[i].docid, 0);
                 docvec[i].offset
             })
             .for_each(|offset| {
@@ -163,7 +174,6 @@ fn train_qrels(
                 neg.push(fv);
             });
     }
-    println!("Random negative samples ({}): {:?}", num_neg, using);
 
     model.train(&pos, &neg);
     model.save(model_file)?;
@@ -201,6 +211,21 @@ fn score_collection(
 ) -> Result<Vec<DocScore>, std::io::Error> {
     let model = Classifier::load(model_file).unwrap();
     let n = score_args.get_one::<usize>("num_scores").unwrap();
+    let exclude_fn = score_args.get_one::<String>("exclude");
+
+    let mut exclude = HashSet::new();
+    match exclude_fn {
+        Some(efn) => {
+            let exclude_fp = BufReader::new(File::open(efn)?);
+            exclude_fp
+                .lines()
+                .map(|line| line.unwrap().split_whitespace().nth(2).unwrap().to_string())
+                .for_each(|d| {
+                    exclude.insert(d);
+                });
+        }
+        _ => (),
+    }
 
     let feat_file = coll_prefix.to_string() + ".ftr";
 
@@ -210,6 +235,9 @@ fn score_collection(
     let mut progress = tqdm!();
 
     while let Ok(fv) = FeatureVec::read_from(&mut feats) {
+        if exclude.contains(&fv.docid) {
+            continue;
+        }
         let score = model.inner_product(&fv);
         top_scores.push(DocScore {
             docid: fv.docid,
@@ -223,7 +251,8 @@ fn score_collection(
     }
 
     let top = top_scores.into_vec_desc();
-    top.iter().for_each(|ds| println!("{} {}", ds.docid, ds.score));
+    top.iter()
+        .for_each(|ds| println!("{} {}", ds.docid, ds.score));
 
     Ok(top)
 }
