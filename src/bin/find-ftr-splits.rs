@@ -1,5 +1,5 @@
 use clap::{Arg, Command};
-use kdam::{tqdm, Bar};
+use kdam::{tqdm};
 use std::io::prelude::*;
 use std::{error::Error, fs::File, io::BufWriter};
 

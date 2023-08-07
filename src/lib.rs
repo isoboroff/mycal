@@ -274,7 +274,7 @@ impl FeatureVec {
     pub fn push(&mut self, id: usize, val: f32) {
         self.features.push(FeaturePair { id, value: val });
     }
-    pub fn normalize(&mut self) {
+    pub fn compute_norm(&mut self) {
         let norm = self
             .features
             .iter()
@@ -284,6 +284,11 @@ impl FeatureVec {
             .sqrt();
         self.squared_norm = norm;
     }
+    // pub fn normalize(&mut self) -> &FeatureVec {
+    //     let new_features = self.features.iter().map(|fp| FeaturePair { id: fp.id, value: fp.value / self.squared_norm }).collect();
+    //     self.features = new_features;
+    //     self
+    // }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -291,9 +296,9 @@ pub struct Classifier {
     pub lambda: f32,
     pub num_iters: u32,
 
-    w: Vec<f32>,
-    scale: f32,
-    squared_norm: f32,
+    pub w: Vec<f32>,
+    pub scale: f32,
+    pub squared_norm: f32,
 }
 
 impl Classifier {
@@ -319,26 +324,37 @@ impl Classifier {
         Ok(())
     }
 
+    const MIN_SCALE: f32 = 0.00000000001;
+
     pub fn train(&mut self, positives: &Vec<FeatureVec>, negatives: &Vec<FeatureVec>) {
         let mut rng = thread_rng();
 
         for i in 0..self.num_iters {
             let eta = 1.0 / (self.lambda * (i + 1) as f32);
-            let a = positives.choose(&mut rng).unwrap();
+            let a: &FeatureVec = positives.choose(&mut rng).unwrap();
             let b = negatives.choose(&mut rng).unwrap();
-
+            // let y = 1.0;
+            // let mut loss = self.inner_product_on_difference(a, b);
+            // loss *= y;
+            // loss = loss.exp();
+            // loss = y / (1.0 + loss);
             let y = 1.0;
-            let mut loss = self.inner_product_on_difference(a, b);
-            loss *= y;
-            loss = loss.exp();
-            loss = y / (1.0 + loss);
+            let ip = self.inner_product_on_difference(a, b);
+            let loss = y / (1.0 + f32::exp(y * ip));
+            // println!("ip {:.5} loss {:.5}", ip, loss);
 
             // Regularize
             let scaling_factor = 1.0 - (eta * self.lambda);
-            self.scale_by(scaling_factor);
+            if scaling_factor > Self::MIN_SCALE {
+                self.scale_by(scaling_factor);
+            } else {
+                self.scale_by(Self::MIN_SCALE);
+            }
 
-            self.add_vector(a, eta * loss);
-            self.add_vector(b, -1.0 * eta * loss);
+            if loss != 0.0 {
+                self.add_vector(a, eta * loss);
+                self.add_vector(b, -1.0 * eta * loss);
+            }
 
             // Pegasos projection
             let projection_val = 1.0 / (self.lambda * self.squared_norm).sqrt();
@@ -348,6 +364,29 @@ impl Classifier {
         }
 
         self.scale_to_one();
+
+        let (mut tpos, mut fpos, mut tneg, mut fneg) = (0, 0, 0, 0);
+        for pos in positives.iter() {
+            let p = self.inner_product(pos);
+            if p > 0.0 {
+                tpos += 1
+            } else if p <= 0.0 {
+                fneg += 1
+            }
+        }
+        for neg in negatives.iter() {
+            let p = self.inner_product(neg);
+            if p >= 0.0 {
+                fpos += 1
+            } else if p < 0.0 {
+                tneg += 1
+            }
+        }
+        println!(
+            "training precision {:.5}, recall {:.5}",
+            tpos as f32 / (tpos + fpos) as f32,
+            tpos as f32 / (tpos + fneg) as f32
+        );
     }
 
     pub fn inner_product(&self, x: &FeatureVec) -> f32 {
@@ -371,8 +410,6 @@ impl Classifier {
         }
         self.scale = 1.0;
     }
-
-    const MIN_SCALE: f32 = 0.00000000001;
 
     fn scale_by(&mut self, scaling_factor: f32) {
         if self.scale < Self::MIN_SCALE {

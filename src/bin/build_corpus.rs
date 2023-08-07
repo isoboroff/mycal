@@ -139,7 +139,7 @@ fn main() -> Result<()> {
                 new_fv.push(*new_tokid, (1.0 + f.value.log10()) * df);
             }
         }
-        new_fv.normalize();
+        new_fv.compute_norm();
         if intid >= library.docs.len() {
             println!("oh shit: {}", intid);
         }
