@@ -219,7 +219,7 @@ fn score_collection(
             let exclude_fp = BufReader::new(File::open(efn)?);
             exclude_fp
                 .lines()
-                .map(|line| line.unwrap().split_whitespace().nth(2).unwrap().to_string())
+                .map(|line| line.unwrap().split_whitespace().nth(1).unwrap().to_string())
                 .for_each(|d| {
                     exclude.insert(d);
                 });
