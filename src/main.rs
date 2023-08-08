@@ -36,6 +36,14 @@ fn cli() -> Command {
                         .value_parser(clap::value_parser!(usize))
                         .default_value("0")
                         .help("Add n randomly-sampled documents as nonrelevant."),
+                )
+                .arg(
+                    Arg::new("level")
+                        .short('l')
+                        .long("level")
+                        .value_parser(clap::value_parser!(i32))
+                        .default_value("1")
+                        .help("Minimum relevance level in the qrels to count as relevant."),
                 ),
         )
         .subcommand(
@@ -136,7 +144,9 @@ fn train_qrels(
                 fv.compute_norm();
             }
             let rel = i32::from_str(&fields[3]).unwrap();
-            if rel <= 0 {
+            let min = qrels_args.get_one::<i32>("level").unwrap();
+
+            if rel < *min {
                 neg.push(fv);
                 println!("qrels-neg {} {}", fields[2], fields[3]);
             } else {
