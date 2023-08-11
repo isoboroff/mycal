@@ -133,26 +133,28 @@ fn train_qrels(
             line.split_whitespace().map(|x| x.to_string()).collect()
         })
         .for_each(|fields: Vec<String>| {
-            using.insert(fields[2].clone());
-            let dib = docs.db.get(&fields[2]).unwrap().unwrap();
-            let di: DocInfo = bincode::deserialize(&dib).unwrap();
-            feats
-                .seek(SeekFrom::Start(di.offset))
-                .expect("Seek error in feats");
-            let mut fv = FeatureVec::read_from(&mut feats).expect("Error reading feature vector");
-            if fv.squared_norm == 0.0 {
-                fv.compute_norm();
-            }
-            let rel = i32::from_str(&fields[3]).unwrap();
-            let min = qrels_args.get_one::<i32>("level").unwrap();
+            if let Some(dib) = docs.db.get(&fields[2]).unwrap() {
+                using.insert(fields[2].clone());
+                let di: DocInfo = bincode::deserialize(&dib).unwrap();
+                feats
+                    .seek(SeekFrom::Start(di.offset))
+                    .expect("Seek error in feats");
+                let mut fv =
+                    FeatureVec::read_from(&mut feats).expect("Error reading feature vector");
+                if fv.squared_norm == 0.0 {
+                    fv.compute_norm();
+                }
+                let rel = i32::from_str(&fields[3]).unwrap();
+                let min = qrels_args.get_one::<i32>("level").unwrap();
 
-            if rel < *min {
-                neg.push(fv);
-                println!("qrels-neg {} {}", fields[2], fields[3]);
-            } else {
-                pos.push(fv);
-                println!("qrels-pos {} {}", fields[2], fields[3]);
-            };
+                if rel < *min {
+                    neg.push(fv);
+                    println!("qrels-neg {} {}", fields[2], fields[3]);
+                } else {
+                    pos.push(fv);
+                    println!("qrels-pos {} {}", fields[2], fields[3]);
+                };
+            }
         });
 
     let num_neg = qrels_args.get_one::<usize>("negatives").unwrap();
