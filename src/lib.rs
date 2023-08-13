@@ -327,13 +327,15 @@ impl Classifier {
     const MIN_SCALE: f32 = 0.00000000001;
 
     pub fn train(&mut self, positives: &Vec<FeatureVec>, negatives: &Vec<FeatureVec>) {
+        assert!(!positives.is_empty(), "No positive examples");
+        assert!(!negatives.is_empty(), "No negative examples");
         let mut rng = thread_rng();
 
         for i in 0..self.num_iters {
             let eta = 1.0 / (self.lambda * (i + 1) as f32);
-            let a: &FeatureVec = positives.choose(&mut rng).unwrap();
+            let a = positives.choose(&mut rng).unwrap();
             let b = negatives.choose(&mut rng).unwrap();
-            // let y = 1.0;
+
             // let mut loss = self.inner_product_on_difference(a, b);
             // loss *= y;
             // loss = loss.exp();
