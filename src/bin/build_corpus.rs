@@ -16,6 +16,12 @@ struct Cli {
     out_prefix: String,
     /// The path to a file of documents, formatted as JSON lines
     bundles: Vec<String>,
+    /// Document ID field
+    #[arg(short = 'd', default_value = "doc_id")]
+    docid: String,
+    /// Document body text field
+    #[arg(short = 'b', default_value = "text")]
+    body: String,
 }
 
 /// Read normal or compressed files seamlessly
@@ -41,10 +47,12 @@ pub fn reader(filename: &str) -> Box<dyn BufRead> {
 fn tokenize_and_map(
     docmap: serde_json::Map<String, serde_json::Value>,
     dict: &mut Dict,
+    docid_field: &String,
+    text_field: &String,
 ) -> (String, HashMap<usize, i32>) {
     let mut m = HashMap::new();
-    let docid = docmap["pid"].as_str().unwrap();
-    let tokens = tokenize(docmap["passage"].as_str().unwrap());
+    let docid = docmap[docid_field].as_str().unwrap();
+    let tokens = tokenize(docmap[text_field].as_str().unwrap());
 
     for x in tokens {
         let tokid = dict.add_tok(x.to_owned());
@@ -80,7 +88,7 @@ fn main() -> Result<()> {
         reader
             .lines()
             .map(|line| from_str::<Map<String, Value>>(&line.unwrap()).expect("Error parsing JSON"))
-            .map(|docmap| tokenize_and_map(docmap, &mut dict))
+            .map(|docmap| tokenize_and_map(docmap, &mut dict, &args.docid, &args.body))
             .map(|(docid, docmap)| {
                 let mut fv = FeatureVec::new(docid.clone());
                 for (tok, count) in docmap {
