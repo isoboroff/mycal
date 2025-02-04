@@ -38,7 +38,7 @@ fn main() -> Result<()> {
             offset: di.offset,
         });
         bucket.set(&docid, &dib).expect("Could not insert into db");
-        progbar.update(1);
+        let _ = progbar.update(1);
     }
 
     Ok(())

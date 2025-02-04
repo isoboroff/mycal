@@ -3,8 +3,7 @@ use kdam::{tqdm, BarExt};
 use min_max_heap::MinMaxHeap;
 use mycal::{Classifier, Dict, DocInfo, DocsDb, FeatureVec};
 use ordered_float::OrderedFloat;
-use rand::distributions::Uniform;
-use rand::Rng;
+use rand::prelude::*;
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::error::Error;
@@ -125,6 +124,10 @@ fn train_qrels(
     let mut neg = Vec::new();
     let mut using = HashSet::new();
 
+    /*
+    Read a qrels-formatted file specifying the training documents.
+    Get each document's feature vector and add it to the appropriate list (pos or neg)
+    */
     qrels
         .lines()
         .filter(|result| !result.as_ref().unwrap().starts_with('#'))
@@ -157,28 +160,18 @@ fn train_qrels(
             }
         });
 
+    // If requested, add num_neg more negative examples to neg
     let num_neg = qrels_args.get_one::<usize>("negatives").unwrap();
     if *num_neg > 0 {
         let docvec_file = coll_prefix.to_string() + ".dvc";
         let docvec_fp = BufReader::new(File::open(docvec_file)?);
         let docvec: Vec<DocInfo> = bincode::deserialize_from(docvec_fp).unwrap();
-        let numdocs = docvec.len();
-        let mut rng = rand::thread_rng();
-        let uniform = Uniform::new(0, numdocs as usize);
+        let mut rng = rand::rng();
 
-        (&mut rng)
-            .sample_iter(uniform)
-            .take(*num_neg)
-            .map(|mut i| {
-                let mut my_mut_rng = rand::thread_rng();
-                while using.contains(&docvec[i].docid) {
-                    i = (&mut my_mut_rng).sample(uniform);
-                }
-                using.insert(docvec[i].docid.clone());
-                println!("samp-neg {} {}", docvec[i].docid, 0);
-                docvec[i].offset
-            })
-            .for_each(|offset| {
+        docvec
+            .choose_multiple(&mut rng, *num_neg)
+            .map(|di| di.offset)
+            .for_each(|offset: u64| {
                 feats
                     .seek(SeekFrom::Start(offset))
                     .expect("Seek error in feats");
@@ -259,7 +252,7 @@ fn score_collection(
         while top_scores.len() > *n {
             top_scores.pop_min();
         }
-        progress.update(1);
+        let _ = progress.update(1);
     }
 
     let top = top_scores.into_vec_desc();

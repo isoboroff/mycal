@@ -98,13 +98,13 @@ fn main() -> Result<()> {
                 fv
             })
             .for_each(|fv| {
-                progress.update(1);
+                let _ = progress.update(1);
                 num_docs += 1;
                 bincode::serialize_into(&mut binout, &fv).expect("Error writing to bin file");
             });
 
         binout.flush()?;
-        progress.refresh();
+        let _ = progress.refresh();
     }
 
     // Compute IDF, drop singleton terms
@@ -158,7 +158,7 @@ fn main() -> Result<()> {
         lib.insert_batch(&library.docs[intid].docid, &library.docs[intid], 100_000);
 
         intid += 1;
-        progress.update(1);
+        let _ = progress.update(1);
     }
     binout.flush()?;
     remove_file(args.out_prefix.to_string() + ".tmp")?;

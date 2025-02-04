@@ -1,7 +1,6 @@
 use bincode::Result;
 use porter_stemmer::stem;
-use rand::seq::SliceRandom;
-use rand::thread_rng;
+use rand::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
@@ -329,7 +328,7 @@ impl Classifier {
     pub fn train(&mut self, positives: &Vec<FeatureVec>, negatives: &Vec<FeatureVec>) {
         assert!(!positives.is_empty(), "No positive examples");
         assert!(!negatives.is_empty(), "No negative examples");
-        let mut rng = thread_rng();
+        let mut rng = rand::rng();
 
         for i in 0..self.num_iters {
             let eta = 1.0 / (self.lambda * (i + 1) as f32);
