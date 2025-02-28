@@ -51,8 +51,20 @@ fn tokenize_and_map(
     text_field: &String,
 ) -> (String, HashMap<usize, i32>) {
     let mut m = HashMap::new();
-    let docid = docmap[docid_field].as_str().unwrap();
-    let tokens = tokenize(docmap[text_field].as_str().unwrap());
+    let docid = match docmap.contains_key(docid_field) {
+        true => docmap[docid_field].as_str().unwrap(),
+        false => panic!(
+            "Document does not contain a {} field for the docid (use -d option?)",
+            docid_field
+        ),
+    };
+    let tokens = match docmap.contains_key(text_field) {
+        true => tokenize(docmap[text_field].as_str().unwrap()),
+        false => panic!(
+            "Document does not contain a {} field for the text (use -t option?)",
+            text_field
+        ),
+    };
 
     for x in tokens {
         let tokid = dict.add_tok(x.to_owned());
