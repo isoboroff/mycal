@@ -1,14 +1,16 @@
 use clap::Parser;
 use flate2::read;
 use kdam::{tqdm, Bar, BarExt};
-use mycal::{tokenize, Dict, Docs, DocsDb, FeatureVec};
+use mycal::{get_tokenizer, Dict, Docs, DocsDb, FeatureVec, Tokenizer};
+use serde_derive::{Deserialize, Serialize};
 use serde_json::{from_str, Map, Value};
 use std::collections::HashMap;
 use std::ffi::OsStr;
-use std::fs::{remove_file, File};
+use std::fs;
 use std::io::Write;
 use std::io::{BufRead, BufReader, BufWriter, Result, Seek};
 use std::path::Path;
+use toml;
 
 #[derive(Parser)]
 struct Cli {
@@ -17,11 +19,26 @@ struct Cli {
     /// The path to a file of documents, formatted as JSON lines
     bundles: Vec<String>,
     /// Document ID field
-    #[arg(short = 'd', default_value = "doc_id")]
+    #[arg(short, long, value_name = "FIELD", default_value = "doc_id")]
     docid: String,
     /// Document body text field
-    #[arg(short = 'b', default_value = "text")]
+    #[arg(short, long, value_name = "FIELD", default_value = "text")]
     body: String,
+    #[arg(short = 't', default_value = "englishstemlower")]
+    tokenizer: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct Config {
+    tokenizer: String,
+}
+
+impl Config {
+    fn default() -> Config {
+        Config {
+            tokenizer: "englishstemlower".to_string(),
+        }
+    }
 }
 
 /// Read normal or compressed files seamlessly
@@ -29,7 +46,7 @@ struct Cli {
 /// from https://users.rust-lang.org/t/write-to-normal-or-gzip-file-transparently/35561/2
 pub fn reader(filename: &str) -> Box<dyn BufRead> {
     let path = Path::new(filename);
-    let file = match File::open(path) {
+    let file = match fs::File::open(path) {
         Err(why) => panic!("couldn't open {}: {:?}", path.display(), why),
         Ok(file) => file,
     };
@@ -46,6 +63,7 @@ pub fn reader(filename: &str) -> Box<dyn BufRead> {
 
 fn tokenize_and_map(
     docmap: serde_json::Map<String, serde_json::Value>,
+    tokenizer: &Box<dyn Tokenizer>,
     dict: &mut Dict,
     docid_field: &String,
     text_field: &String,
@@ -59,7 +77,7 @@ fn tokenize_and_map(
         ),
     };
     let tokens = match docmap.contains_key(text_field) {
-        true => tokenize(docmap[text_field].as_str().unwrap()),
+        true => tokenizer.tokenize(docmap[text_field].as_str().unwrap()),
         false => panic!(
             "Document does not contain a {} field for the text (use -t option?)",
             text_field
@@ -86,7 +104,16 @@ fn main() -> Result<()> {
     let mut library = Docs::new();
 
     let mut num_docs = 0;
-    let mut binout = BufWriter::new(File::create(args.out_prefix.clone() + ".tmp")?);
+    let mut binout = BufWriter::new(fs::File::create(args.out_prefix.clone() + ".tmp")?);
+
+    let config_filename = args.out_prefix.clone() + ".config";
+    let config = match fs::read_to_string(&config_filename) {
+        Ok(c) => toml::from_str(&c),
+        Err(_) => Ok(Config::default()),
+    }
+    .unwrap();
+
+    let tokenizer = get_tokenizer(args.tokenizer.unwrap().as_str());
 
     for bundle in args.bundles {
         let path = Path::new(&bundle);
@@ -100,7 +127,7 @@ fn main() -> Result<()> {
         reader
             .lines()
             .map(|line| from_str::<Map<String, Value>>(&line.unwrap()).expect("Error parsing JSON"))
-            .map(|docmap| tokenize_and_map(docmap, &mut dict, &args.docid, &args.body))
+            .map(|docmap| tokenize_and_map(docmap, &tokenizer, &mut dict, &args.docid, &args.body))
             .map(|(docid, docmap)| {
                 let mut fv = FeatureVec::new(docid.clone());
                 for (tok, count) in docmap {
@@ -146,8 +173,8 @@ fn main() -> Result<()> {
     println!("Second pass: precompute weights and fix up tokenids");
     let mut progress = Bar::new(num_docs);
     let mut intid = 0;
-    let mut binin = BufReader::new(File::open(args.out_prefix.clone() + ".tmp")?);
-    binout = BufWriter::new(File::create(args.out_prefix.clone() + ".ftr")?);
+    let mut binin = BufReader::new(fs::File::open(args.out_prefix.clone() + ".tmp")?);
+    binout = BufWriter::new(fs::File::create(args.out_prefix.clone() + ".ftr")?);
     let libdb_fn = args.out_prefix.to_string() + ".lib";
     let mut lib = DocsDb::create(&libdb_fn);
 
@@ -173,7 +200,7 @@ fn main() -> Result<()> {
         let _ = progress.update(1);
     }
     binout.flush()?;
-    remove_file(args.out_prefix.to_string() + ".tmp")?;
+    fs::remove_file(args.out_prefix.to_string() + ".tmp")?;
 
     // let libdb_fn = args.out_prefix.to_string() + ".lib";
     // let mut lib = DocsDb::create(&libdb_fn);
@@ -186,6 +213,16 @@ fn main() -> Result<()> {
     // lib.process_remaining();
 
     new_dict.save(&(args.out_prefix + ".dct"))?;
+
+    let config_writer = fs::File::create(&config_filename)?;
+    let mut config_writer = BufWriter::new(config_writer);
+    write!(
+        config_writer,
+        "{:?}",
+        toml::to_string_pretty(&config).unwrap()
+    )
+    .expect("Can't write config file");
+    config_writer.flush()?;
 
     Ok(())
 }
