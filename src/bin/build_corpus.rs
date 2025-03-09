@@ -1,7 +1,7 @@
 use clap::Parser;
 use flate2::read;
 use kdam::{tqdm, Bar, BarExt};
-use mycal::{get_tokenizer, Dict, Docs, DocsDb, FeatureVec, Tokenizer};
+use mycal::{tok::get_tokenizer, Dict, Docs, DocsDb, FeatureVec, Tokenizer};
 use serde_derive::{Deserialize, Serialize};
 use serde_json::{from_str, Map, Value};
 use std::collections::HashMap;
