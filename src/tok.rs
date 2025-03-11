@@ -1,8 +1,11 @@
 use porter_stemmer::stem;
 use rust_tokenizers::tokenizer::Tokenizer as RustTokenizer;
 use rust_tokenizers::tokenizer::XLMRobertaTokenizer;
+use std::collections::HashMap;
 use unicode_normalization::UnicodeNormalization;
 use unicode_segmentation::UnicodeSegmentation;
+
+use crate::Dict;
 
 pub trait Tokenizer {
     fn tokenize(&self, text: &str) -> Vec<String>;
@@ -177,4 +180,38 @@ pub fn tokenize(text: &str) -> Vec<String> {
         .map(|s| s.to_lowercase())
         .map(|s| if is_alpha(&s) { stem(&s) } else { s })
         .collect()
+}
+
+pub fn tokenize_and_map(
+    docmap: serde_json::Map<String, serde_json::Value>,
+    tokenizer: &Box<dyn Tokenizer>,
+    dict: &mut Dict,
+    docid_field: &String,
+    text_field: &String,
+) -> (String, HashMap<usize, i32>) {
+    let mut m = HashMap::new();
+    let docid = match docmap.contains_key(docid_field) {
+        true => docmap[docid_field].as_str().unwrap(),
+        false => panic!(
+            "Document does not contain a {} field for the docid (use -d option?)",
+            docid_field
+        ),
+    };
+    let tokens = match docmap.contains_key(text_field) {
+        true => tokenizer.tokenize(docmap[text_field].as_str().unwrap()),
+        false => panic!(
+            "Document does not contain a {} field for the text (use -t option?)",
+            text_field
+        ),
+    };
+
+    for x in tokens {
+        let tokid = dict.add_tok(x.to_owned());
+        if !m.contains_key(&tokid) {
+            dict.incr_df(tokid);
+        }
+        *m.entry(tokid).or_insert(0) += 1;
+    }
+
+    (docid.to_owned(), m)
 }

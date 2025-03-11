@@ -1,6 +1,8 @@
 use clap::Parser;
 use kdam::{tqdm, Bar, BarExt};
-use mycal::{tok::get_tokenizer, utils::reader, Dict, Docs, DocsDb, FeatureVec, Tokenizer};
+use mycal::tok::{get_tokenizer, tokenize_and_map};
+use mycal::utils::reader;
+use mycal::{Dict, Docs, DocsDb, FeatureVec};
 use serde_derive::{Deserialize, Serialize};
 use serde_json::{from_str, Map, Value};
 use std::collections::HashMap;
@@ -37,40 +39,6 @@ impl Config {
             tokenizer: "englishstemlower".to_string(),
         }
     }
-}
-
-fn tokenize_and_map(
-    docmap: serde_json::Map<String, serde_json::Value>,
-    tokenizer: &Box<dyn Tokenizer>,
-    dict: &mut Dict,
-    docid_field: &String,
-    text_field: &String,
-) -> (String, HashMap<usize, i32>) {
-    let mut m = HashMap::new();
-    let docid = match docmap.contains_key(docid_field) {
-        true => docmap[docid_field].as_str().unwrap(),
-        false => panic!(
-            "Document does not contain a {} field for the docid (use -d option?)",
-            docid_field
-        ),
-    };
-    let tokens = match docmap.contains_key(text_field) {
-        true => tokenizer.tokenize(docmap[text_field].as_str().unwrap()),
-        false => panic!(
-            "Document does not contain a {} field for the text (use -t option?)",
-            text_field
-        ),
-    };
-
-    for x in tokens {
-        let tokid = dict.add_tok(x.to_owned());
-        if !m.contains_key(&tokid) {
-            dict.incr_df(tokid);
-        }
-        *m.entry(tokid).or_insert(0) += 1;
-    }
-
-    (docid.to_owned(), m)
 }
 
 fn main() -> Result<()> {
