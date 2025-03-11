@@ -1,5 +1,7 @@
 use bincode::Result;
+use ordered_float::OrderedFloat;
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Write};
@@ -292,4 +294,28 @@ impl FeatureVec {
     //     self.features = new_features;
     //     self
     // }
+}
+
+#[derive(Eq, Debug, Clone)]
+pub struct DocScore {
+    pub docid: String,
+    pub score: OrderedFloat<f32>,
+}
+
+impl Ord for DocScore {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.score.cmp(&other.score).reverse()
+    }
+}
+
+impl PartialOrd for DocScore {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other).reverse())
+    }
+}
+
+impl PartialEq for DocScore {
+    fn eq(&self, other: &Self) -> bool {
+        self.score == other.score
+    }
 }

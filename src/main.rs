@@ -1,10 +1,9 @@
 use clap::{Arg, ArgMatches, Command};
 use kdam::{tqdm, BarExt};
 use min_max_heap::MinMaxHeap;
-use mycal::{Classifier, Dict, DocInfo, DocsDb, FeatureVec};
+use mycal::{Classifier, Dict, DocInfo, DocScore, DocsDb, FeatureVec};
 use ordered_float::OrderedFloat;
 use rand::prelude::*;
-use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::error::Error;
 use std::fs::File;
@@ -183,30 +182,6 @@ fn train_qrels(
     model.train(&pos, &neg);
     model.save(model_file)?;
     Ok(model)
-}
-
-#[derive(Eq, Debug, Clone)]
-struct DocScore {
-    docid: String,
-    score: OrderedFloat<f32>,
-}
-
-impl Ord for DocScore {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.score.cmp(&other.score).reverse()
-    }
-}
-
-impl PartialOrd for DocScore {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other).reverse())
-    }
-}
-
-impl PartialEq for DocScore {
-    fn eq(&self, other: &Self) -> bool {
-        self.score == other.score
-    }
 }
 
 fn score_collection(
