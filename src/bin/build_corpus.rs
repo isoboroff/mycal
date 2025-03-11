@@ -1,11 +1,9 @@
 use clap::Parser;
-use flate2::read;
 use kdam::{tqdm, Bar, BarExt};
-use mycal::{tok::get_tokenizer, Dict, Docs, DocsDb, FeatureVec, Tokenizer};
+use mycal::{tok::get_tokenizer, utils::reader, Dict, Docs, DocsDb, FeatureVec, Tokenizer};
 use serde_derive::{Deserialize, Serialize};
 use serde_json::{from_str, Map, Value};
 use std::collections::HashMap;
-use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
 use std::io::{BufRead, BufReader, BufWriter, Result, Seek};
@@ -38,26 +36,6 @@ impl Config {
         Config {
             tokenizer: "englishstemlower".to_string(),
         }
-    }
-}
-
-/// Read normal or compressed files seamlessly
-/// Uses the presence of a `.gz` extension to decide
-/// from https://users.rust-lang.org/t/write-to-normal-or-gzip-file-transparently/35561/2
-pub fn reader(filename: &str) -> Box<dyn BufRead> {
-    let path = Path::new(filename);
-    let file = match fs::File::open(path) {
-        Err(why) => panic!("couldn't open {}: {:?}", path.display(), why),
-        Ok(file) => file,
-    };
-
-    if path.extension() == Some(OsStr::new("gz")) {
-        Box::new(BufReader::with_capacity(
-            128 * 1024,
-            read::GzDecoder::new(file),
-        ))
-    } else {
-        Box::new(BufReader::with_capacity(128 * 1024, file))
     }
 }
 
