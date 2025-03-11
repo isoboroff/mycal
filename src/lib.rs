@@ -10,6 +10,9 @@ pub mod classifier;
 pub use classifier::Classifier;
 pub mod tok;
 pub use tok::Tokenizer;
+pub mod compress;
+pub mod index;
+pub mod utils;
 
 #[derive(Debug, Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd)]
 pub struct DocInfo {
