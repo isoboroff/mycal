@@ -14,13 +14,17 @@ pub mod compress;
 pub mod index;
 pub mod utils;
 
+// DocInfos help us find the document features in the feature vec file
 #[derive(Debug, Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd)]
 pub struct DocInfo {
-    pub intid: usize,
-    pub docid: String,
-    pub offset: u64,
+    pub intid: usize,  // internal id (1 ..)
+    pub docid: String, // external id (from original doc)
+    pub offset: u64,   // offset into the feature vec file
 }
 
+// The DocsDb is a sled::Db mapping of external docid to DocInfo.
+// This implementation happens because sled was my intro to
+// swerialization.
 pub struct DocsDb {
     // Sled-based docid -> DocInfo table
     pub filename: String,
@@ -155,6 +159,13 @@ impl DocsDb {
     }
 }
 
+// Docs is a simpler structure for the same thing.
+// A hashmap of docid -> intid, and a Vector of DocInfos
+// This is used in-memory to store docinfo information
+// from the first pass of build_corpus().
+// Since the addition of the DocsDb, we don't persist
+// this on disk anymore.
+// (maybe we should move it to build_corpus.rs)
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Docs {
     pub m: HashMap<String, usize>, // map of docid to internal id
@@ -197,6 +208,11 @@ impl Docs {
     }
 }
 
+// The Dict is the lexicon, mapping tokens to internal token ids,
+// and keeping document frequencies for each token.
+// This is kept on disk and brought into memory completely when
+// we use it.
+// TODO why don't we just keep the offsets in here? Why DocInfo?
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Dict {
     pub m: HashMap<String, usize>, // map token to internal tokid
@@ -242,12 +258,21 @@ impl Dict {
     }
 }
 
+// A feature, an internal token ID and a float value.
+// This is where we learned that core Rust refuses to
+// sort floats because maybe NaN.  There is a create
+// called OrderedFloat that we use.  #ffs
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FeaturePair {
     pub id: usize,
     pub value: f32,
 }
 
+// Feature vectors are the parsed representation of documents.
+// We use these while training up the classifier, and in
+// the score_collection function in main, we compute scores
+// by iterating the FeatureVec file.  That's pretty fast
+// up until a million docs or so.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FeatureVec {
     pub docid: String,
@@ -299,6 +324,9 @@ impl FeatureVec {
     // }
 }
 
+// Scores for documents, used during score_collection.
+// Note we need OrderedFloat because core Rust won't
+// sort floats because NaN.
 #[derive(Eq, Debug, Clone)]
 pub struct DocScore {
     pub docid: String,
