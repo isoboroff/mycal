@@ -6,9 +6,9 @@ use mycal::{Dict, Docs, DocsDb, FeatureVec};
 use serde_derive::{Deserialize, Serialize};
 use serde_json::{from_str, Map, Value};
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self};
 use std::io::Write;
-use std::io::{BufRead, BufReader, BufWriter, Result, Seek};
+use std::io::{BufRead, BufReader, BufWriter, Seek};
 use std::path::Path;
 use toml;
 
@@ -41,7 +41,7 @@ impl Config {
     }
 }
 
-fn main() -> Result<()> {
+fn main() -> Result<(), std::io::Error> {
     let args = Cli::parse();
 
     // First pass: collect dictionary, df counts

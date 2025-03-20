@@ -28,7 +28,7 @@ fn main() -> Result<()> {
         Some(i) => i,
         None => panic!("Docid {} not found", args.docid),
     };
-    let docinfo = match docs.docs.get(*intid) {
+    let docinfo = match docs.docs.get(*intid as usize) {
         Some(di) => di,
         None => panic!("Document {} not found", intid),
     };

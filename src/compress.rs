@@ -1,8 +1,9 @@
 // ported from Joel McKenzie's immediate_access project
 // https://github.com/JMMackenzie/immediate-access/blob/main/compress.hpp
 
-use log::debug;
 use std::collections::VecDeque;
+
+use log::debug;
 
 const MAGIC_F: u32 = 4;
 
@@ -158,13 +159,12 @@ pub fn decode_magic(buffer: &mut VecDeque<u8>) -> (u32, u32) {
 }
 
 pub fn magic_bytes_required(docgap: u32, freq: u32) -> usize {
-    let mut magic_value: u32 = 0;
     let mut bytes: usize = 0;
     if freq < MAGIC_F {
-        magic_value = (docgap - 1) * MAGIC_F + freq;
+        let magic_value = (docgap - 1) * MAGIC_F + freq;
         bytes += vbyte_bytes_required(magic_value);
     } else {
-        magic_value = docgap * MAGIC_F;
+        let mut magic_value = docgap * MAGIC_F;
         bytes += vbyte_bytes_required(magic_value);
         magic_value = freq - MAGIC_F + 1;
         bytes += vbyte_bytes_required(magic_value);
@@ -190,6 +190,12 @@ impl MagicEncodedBuffer {
             last_docid: 0,
         }
     }
+    pub fn from_vec(buffer: Vec<u8>) -> MagicEncodedBuffer {
+        MagicEncodedBuffer {
+            buffer: VbyteEncodedBuffer::new(buffer),
+            last_docid: 0,
+        }
+    }
     pub fn tell(&self) -> usize {
         self.buffer.index
     }
@@ -204,11 +210,14 @@ impl MagicEncodedBuffer {
     pub fn byte_slice(&mut self, from: usize, to: usize) -> &[u8] {
         &self.buffer.buffer.as_slice()[from..to]
     }
+    pub fn as_slice(&self) -> &[u8] {
+        &self.buffer.buffer.as_slice()
+    }
     pub fn vbyte_read(&mut self) -> Result<u32, &str> {
         self.buffer.read()
     }
     pub fn read(&mut self) -> (u32, u32) {
-        let decoded = match (self.buffer.read()) {
+        let decoded = match self.buffer.read() {
             Ok(value) => value,
             Err(e) => panic!("Error reading from buffer: {}", e),
         };
@@ -219,7 +228,7 @@ impl MagicEncodedBuffer {
             freq = decoded % MAGIC_F;
         } else {
             gap = decoded / MAGIC_F;
-            freq = match (self.buffer.read()) {
+            freq = match self.buffer.read() {
                 Ok(value) => value,
                 Err(e) => panic!("Error reading from buffer: {}", e),
             };

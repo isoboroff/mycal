@@ -17,9 +17,46 @@ pub mod utils;
 // DocInfos help us find the document features in the feature vec file
 #[derive(Debug, Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd)]
 pub struct DocInfo {
-    pub intid: usize,  // internal id (1 ..)
+    pub intid: u32,    // internal id (1 ..)
     pub docid: String, // external id (from original doc)
     pub offset: u64,   // offset into the feature vec file
+}
+
+// A hashmap of docid -> intid, and a Vector of DocInfos
+// This is used in-memory to store docinfo information
+// from the first pass of build_corpus().
+// Since the addition of the DocsDb, we don't persist
+// this on disk anymore.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Docs {
+    pub m: HashMap<String, u32>, // map of docid to internal id
+    pub docs: Vec<DocInfo>,      // vec of DocInfo (docid, intid, offset) tuples
+}
+
+impl Docs {
+    pub fn new() -> Docs {
+        Docs {
+            m: HashMap::new(),
+            docs: Vec::new(),
+        }
+    }
+    pub fn get_intid(&self, docid: &str) -> Option<&u32> {
+        self.m.get(docid)
+    }
+    pub fn add_doc(&mut self, docid: &str) -> u32 {
+        if self.m.contains_key(docid) {
+            self.m.get(docid).unwrap().to_owned()
+        } else {
+            let intid = self.docs.len() as u32 + 1;
+            self.m.insert(docid.to_string(), intid);
+            self.docs.push(DocInfo {
+                docid: docid.to_string(),
+                intid,
+                offset: 0,
+            });
+            intid
+        }
+    }
 }
 
 // The DocsDb is a sled::Db mapping of external docid to DocInfo.
@@ -29,13 +66,14 @@ pub struct DocsDb {
     // Sled-based docid -> DocInfo table
     pub filename: String,
     pub db: sled::Db,
-    pub next_intid: usize,
+    pub next_intid: u32,
 
     batch: sled::Batch,
     batch_len: usize,
 }
 
 impl DocsDb {
+    // for reading
     pub fn open(filename: &str) -> DocsDb {
         let conf = sled::Config::default()
             .path(filename.to_owned())
@@ -47,12 +85,13 @@ impl DocsDb {
         DocsDb {
             filename: filename.to_string(),
             db,
-            next_intid: 0,
+            next_intid: 1,
             batch: sled::Batch::default(),
             batch_len: 0,
         }
     }
 
+    // for writing
     pub fn create(filename: &str) -> DocsDb {
         let conf = sled::Config::default()
             .path(filename.to_owned())
@@ -64,7 +103,7 @@ impl DocsDb {
         DocsDb {
             filename: filename.to_string(),
             db,
-            next_intid: 0,
+            next_intid: 1,
             batch: sled::Batch::default(),
             batch_len: 0,
         }
@@ -107,19 +146,19 @@ impl DocsDb {
         }
     }
 
-    pub fn insert_iter(
-        &mut self,
-        library: &Docs,
-        stuff: impl Iterator<Item = (String, usize)>,
-    ) -> Result<()> {
-        stuff.for_each(|(docid, intid)| {
-            let di = library.docs.get(intid).unwrap();
-            self.insert_batch(&docid, &di, 100_000);
-        });
-        Ok(())
-    }
+    // pub fn insert_iter(
+    //     &mut self,
+    //     library: &Docs,
+    //     stuff: impl Iterator<Item = (String, u32)>,
+    // ) -> Result<()> {
+    //     stuff.for_each(|(docid, intid)| {
+    //         let di = library.docs.get(intid).unwrap();
+    //         self.insert_batch(&docid, &di, 100_000);
+    //     });
+    //     Ok(())
+    // }
 
-    pub fn get_intid(&self, docid: &str) -> Option<usize> {
+    pub fn get_intid(&self, docid: &str) -> Option<u32> {
         let tmp_docid = docid.to_string();
         let docinfo = self.db.get(tmp_docid).unwrap();
         match docinfo {
@@ -131,18 +170,17 @@ impl DocsDb {
         }
     }
 
-    pub fn add_doc(&mut self, docid: &str) -> Option<usize> {
+    pub fn add_doc(&mut self, docid: &str) -> Option<u32> {
         let tmp_docid = docid.to_string();
-        match self.db.get(&tmp_docid) {
-            Ok(di) => match di {
-                Some(di) => {
-                    let ddi: DocInfo = bincode::deserialize(&di).unwrap();
-                    Some(ddi.intid)
-                }
-                None => None,
-            },
-            _ => {
+        let tmp_di = self.db.get(&tmp_docid).unwrap();
+        match tmp_di {
+            Some(di) => {
+                let ddi: DocInfo = bincode::deserialize(&di).unwrap();
+                Some(ddi.intid)
+            }
+            None => {
                 let intid = self.next_intid;
+                assert_ne!(0, intid);
                 self.next_intid = intid + 1;
                 let new_di = DocInfo {
                     intid,
@@ -156,55 +194,6 @@ impl DocsDb {
                 Some(intid)
             }
         }
-    }
-}
-
-// Docs is a simpler structure for the same thing.
-// A hashmap of docid -> intid, and a Vector of DocInfos
-// This is used in-memory to store docinfo information
-// from the first pass of build_corpus().
-// Since the addition of the DocsDb, we don't persist
-// this on disk anymore.
-// (maybe we should move it to build_corpus.rs)
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Docs {
-    pub m: HashMap<String, usize>, // map of docid to internal id
-    pub docs: Vec<DocInfo>,        // vec of DocInfo (docid, intid, offset) tuples
-}
-
-impl Docs {
-    pub fn new() -> Docs {
-        Docs {
-            m: HashMap::new(),
-            docs: Vec::new(),
-        }
-    }
-    pub fn load(filename: &str) -> Result<Docs> {
-        let mut infp = BufReader::new(File::open(filename)?);
-        bincode::deserialize_from::<&mut BufReader<File>, Docs>(&mut infp)
-    }
-    pub fn get_intid(&self, docid: &str) -> Option<&usize> {
-        self.m.get(docid)
-    }
-    pub fn add_doc(&mut self, docid: &str) -> usize {
-        if self.m.contains_key(docid) {
-            self.m.get(docid).unwrap().to_owned()
-        } else {
-            let intid = self.docs.len();
-            self.m.insert(docid.to_string(), intid);
-            self.docs.push(DocInfo {
-                docid: docid.to_string(),
-                intid,
-                offset: 0,
-            });
-            intid
-        }
-    }
-    pub fn save(&self, filename: &str) -> std::io::Result<()> {
-        let mut outfp = BufWriter::new(File::create(filename)?);
-        bincode::serialize_into(&mut outfp, self).expect("Error writing dictionary");
-        outfp.flush()?;
-        Ok(())
     }
 }
 
@@ -225,7 +214,7 @@ impl Dict {
         Dict {
             m: HashMap::new(),
             df: HashMap::new(),
-            last_tokid: 0,
+            last_tokid: 1,
         }
     }
     pub fn load(filename: &str) -> Result<Dict> {

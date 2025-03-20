@@ -173,6 +173,7 @@ pub fn get_tokenizer(which: &str) -> Box<dyn Tokenizer> {
     }
 }
 
+// This is the original tokenizer before we added Tokenizer
 // Tokens are stemmed, lowercased sequences of alphanumeric characters
 pub fn tokenize(text: &str) -> Vec<String> {
     text.split(|c: char| !c.is_alphanumeric())
@@ -188,8 +189,8 @@ pub fn tokenize_and_map(
     dict: &mut Dict,
     docid_field: &String,
     text_field: &String,
-) -> (String, HashMap<usize, i32>) {
-    let mut m = HashMap::new();
+) -> (String, HashMap<usize, u32>) {
+    let mut m: HashMap<usize, u32> = HashMap::new();
     let docid = match docmap.contains_key(docid_field) {
         true => docmap[docid_field].as_str().unwrap(),
         false => panic!(
