@@ -1,11 +1,11 @@
 use crate::FeatureVec;
 use bincode;
+use bincode::config::Configuration;
+use bincode::error::DecodeError;
 use rand::seq::IndexedRandom;
-use serde_derive::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Write};
 
-#[derive(Debug, Serialize, Deserialize)]
 pub struct Classifier {
     pub lambda: f32,
     pub num_iters: u32,
@@ -13,6 +13,52 @@ pub struct Classifier {
     pub w: Vec<f32>,
     pub scale: f32,
     pub squared_norm: f32,
+
+    config: bincode::config::Configuration,
+}
+
+// The impls for Encode and Decode so we can serialize the Classifier
+impl bincode::Encode for Classifier {
+    fn encode<E: bincode::enc::Encoder>(
+        &self,
+        encoder: &mut E,
+    ) -> core::result::Result<(), bincode::error::EncodeError> {
+        bincode::Encode::encode(&self.lambda, encoder)?;
+        bincode::Encode::encode(&self.num_iters, encoder)?;
+        bincode::Encode::encode(&self.w, encoder)?;
+        bincode::Encode::encode(&self.scale, encoder)?;
+        bincode::Encode::encode(&self.squared_norm, encoder)?;
+        Ok(())
+    }
+}
+
+impl<Context> bincode::Decode<Context> for Classifier {
+    fn decode<D: bincode::de::Decoder<Context = Context>>(
+        decoder: &mut D,
+    ) -> core::result::Result<Self, bincode::error::DecodeError> {
+        Ok(Self {
+            lambda: bincode::Decode::decode(decoder)?,
+            num_iters: bincode::Decode::decode(decoder)?,
+            w: bincode::Decode::decode(decoder)?,
+            scale: bincode::Decode::decode(decoder)?,
+            squared_norm: bincode::Decode::decode(decoder)?,
+            config: bincode::config::standard(),
+        })
+    }
+}
+impl<'de, Context> bincode::BorrowDecode<'de, Context> for Classifier {
+    fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = Context>>(
+        decoder: &mut D,
+    ) -> core::result::Result<Self, bincode::error::DecodeError> {
+        Ok(Self {
+            lambda: bincode::Decode::decode(decoder)?,
+            num_iters: bincode::Decode::decode(decoder)?,
+            w: bincode::Decode::decode(decoder)?,
+            scale: bincode::Decode::decode(decoder)?,
+            squared_norm: bincode::Decode::decode(decoder)?,
+            config: bincode::config::standard(),
+        })
+    }
 }
 
 impl Classifier {
@@ -23,17 +69,18 @@ impl Classifier {
             num_iters,
             scale: 1.0,
             squared_norm: 0.0,
+            config: bincode::config::standard(),
         }
     }
 
-    pub fn load(filename: &str) -> Result<Classifier, Box<bincode::ErrorKind>> {
-        let mut infp = BufReader::new(File::open(filename)?);
-        bincode::deserialize_from::<&mut BufReader<File>, Classifier>(&mut infp)
+    pub fn load(filename: &str, config: Configuration) -> Result<Classifier, DecodeError> {
+        let mut infp = BufReader::new(File::open(filename).expect("Can't open classifier file"));
+        bincode::decode_from_std_read(&mut infp, config)
     }
 
     pub fn save(&self, filename: &str) -> std::io::Result<()> {
         let mut outfp = BufWriter::new(File::create(filename)?);
-        bincode::serialize_into(&mut outfp, self).expect("Error writing model");
+        bincode::encode_into_std_write(self, &mut outfp, self.config).expect("Error writing model");
         outfp.flush()?;
         Ok(())
     }

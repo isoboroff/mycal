@@ -3,8 +3,6 @@
 
 use std::collections::VecDeque;
 
-use log::debug;
-
 const MAGIC_F: u32 = 4;
 
 // Estimates how many bytes we need to encode a value

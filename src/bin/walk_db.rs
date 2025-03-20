@@ -1,3 +1,4 @@
+use bincode::config::Configuration;
 use clap::Parser;
 use mycal::{DocInfo, DocsDb};
 use std::io::Result;
@@ -14,6 +15,7 @@ fn main() -> Result<()> {
     let root = Path::new(".");
     let _dict_file = root.join(format!("{}.dct", args.coll_prefix));
     let docs_file = root.join(format!("{}.lib", args.coll_prefix));
+    let bincode_config = bincode::config::standard();
 
     println!("Opening database...");
     let docs = DocsDb::open(docs_file.to_str().unwrap());
@@ -29,7 +31,7 @@ fn main() -> Result<()> {
         .map(|(k, v)| {
             (
                 String::from_utf8(k.to_vec()),
-                bincode::deserialize::<DocInfo>(&v),
+                bincode::decode_from_slice::<DocInfo, Configuration>(&v, bincode_config),
             )
         })
         .for_each(|(k, v)| println!("{:?} {:?}", k, v));

@@ -1,6 +1,6 @@
 use clap::Parser;
-use std::io::Result;
 use mycal::Classifier;
+use std::io::Result;
 
 #[derive(Parser)]
 struct Cli {
@@ -10,7 +10,7 @@ struct Cli {
 fn main() -> Result<()> {
     let args = Cli::parse();
 
-    let model = Classifier::load(&args.model).unwrap();
+    let model = Classifier::load(&args.model, bincode::config::standard()).unwrap();
 
     println!("sparse model");
     for (i, f) in model.w.iter().enumerate() {

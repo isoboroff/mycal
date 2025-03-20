@@ -19,10 +19,11 @@ fn main() -> Result<()> {
     let _dict_file = root.join(format!("{}.dct", args.coll_prefix));
     let docs_file = root.join(format!("{}.lib", args.coll_prefix));
     let feat_file = root.join(format!("{}.ftr", args.coll_prefix));
+    let bincode_config = bincode::config::standard();
 
     println!("Reading lib structure...");
-    let docs_fp = BufReader::new(File::open(docs_file)?);
-    let docs: Docs = bincode::deserialize_from(docs_fp).unwrap();
+    let mut docs_fp = BufReader::new(File::open(docs_file)?);
+    let docs: Docs = bincode::decode_from_std_read(&mut docs_fp, bincode_config).unwrap();
 
     let intid = match docs.get_intid(&args.docid) {
         Some(i) => i,
@@ -37,7 +38,7 @@ fn main() -> Result<()> {
     let mut feat_fp = BufReader::new(File::open(feat_file)?);
     feat_fp.seek(SeekFrom::Start(docinfo.offset))?;
 
-    let fv: FeatureVec = bincode::deserialize_from(feat_fp).unwrap();
+    let fv: FeatureVec = bincode::decode_from_std_read(&mut feat_fp, bincode_config).unwrap();
     println!("Doc {} ({}): {:?}", args.docid, intid, fv);
 
     Ok(())

@@ -1,6 +1,7 @@
-use bincode::Result;
+use bincode::config::Configuration;
+use bincode::error::{DecodeError, EncodeError};
+use bincode::{Decode, Encode};
 use ordered_float::OrderedFloat;
-use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs::File;
@@ -15,7 +16,7 @@ pub mod index;
 pub mod utils;
 
 // DocInfos help us find the document features in the feature vec file
-#[derive(Debug, Serialize, Deserialize, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Debug, Encode, Decode, Clone, Eq, PartialEq, Ord, PartialOrd)]
 pub struct DocInfo {
     pub intid: u32,    // internal id (1 ..)
     pub docid: String, // external id (from original doc)
@@ -27,7 +28,7 @@ pub struct DocInfo {
 // from the first pass of build_corpus().
 // Since the addition of the DocsDb, we don't persist
 // this on disk anymore.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Encode, Decode)]
 pub struct Docs {
     pub m: HashMap<String, u32>, // map of docid to internal id
     pub docs: Vec<DocInfo>,      // vec of DocInfo (docid, intid, offset) tuples
@@ -70,6 +71,7 @@ pub struct DocsDb {
 
     batch: sled::Batch,
     batch_len: usize,
+    bincode_config: bincode::config::Configuration,
 }
 
 impl DocsDb {
@@ -88,6 +90,7 @@ impl DocsDb {
             next_intid: 1,
             batch: sled::Batch::default(),
             batch_len: 0,
+            bincode_config: bincode::config::standard(),
         }
     }
 
@@ -106,24 +109,28 @@ impl DocsDb {
             next_intid: 1,
             batch: sled::Batch::default(),
             batch_len: 0,
+            bincode_config: bincode::config::standard(),
         }
     }
 
     pub fn get(&self, docid: &str) -> Option<DocInfo> {
-        self.db
-            .get(docid)
-            .unwrap()
-            .map(|ivec| bincode::deserialize(&ivec).unwrap())
+        self.db.get(docid).unwrap().map(|ivec| {
+            bincode::decode_from_slice::<DocInfo, Configuration>(&ivec, self.bincode_config)
+                .unwrap()
+                .0
+        })
     }
 
     pub fn insert(&self, docid: &str, di: &DocInfo) -> Option<sled::IVec> {
-        let dib = bincode::serialize(di).unwrap();
+        let dib = bincode::encode_to_vec::<DocInfo, Configuration>(di.clone(), self.bincode_config)
+            .unwrap();
         // not happy about the error reporting here...
-        self.db.insert(docid, dib).ok().unwrap()
+        self.db.insert(docid, dib.to_vec()).ok().unwrap()
     }
 
     pub fn insert_batch(&mut self, docid: &str, di: &DocInfo, batch_size: usize) {
-        let dib = bincode::serialize(di).unwrap();
+        let dib = bincode::encode_to_vec::<DocInfo, Configuration>(di.clone(), self.bincode_config)
+            .unwrap();
         if self.batch_len > batch_size {
             // We need to use swap because apply_batch consumes the batch
             let mut local_batch = sled::Batch::default();
@@ -131,7 +138,7 @@ impl DocsDb {
             self.db.apply_batch(local_batch).expect("Batch apply fail");
             self.batch_len = 0;
         }
-        self.batch.insert(docid, dib);
+        self.batch.insert(docid, dib.to_vec());
         self.batch_len += 1;
     }
 
@@ -163,7 +170,9 @@ impl DocsDb {
         let docinfo = self.db.get(tmp_docid).unwrap();
         match docinfo {
             Some(bytes) => {
-                let di: DocInfo = bincode::deserialize(&bytes).unwrap();
+                let di: DocInfo = bincode::decode_from_slice(&bytes, self.bincode_config)
+                    .unwrap()
+                    .0;
                 Some(di.intid)
             }
             None => None,
@@ -175,7 +184,9 @@ impl DocsDb {
         let tmp_di = self.db.get(&tmp_docid).unwrap();
         match tmp_di {
             Some(di) => {
-                let ddi: DocInfo = bincode::deserialize(&di).unwrap();
+                let ddi: DocInfo = bincode::decode_from_slice(&di, self.bincode_config)
+                    .unwrap()
+                    .0;
                 Some(ddi.intid)
             }
             None => {
@@ -187,9 +198,9 @@ impl DocsDb {
                     docid: tmp_docid.clone(),
                     offset: 0,
                 };
-                let sdi = bincode::serialize(&new_di).unwrap();
+                let sdi = bincode::encode_to_vec(new_di, self.bincode_config).unwrap();
                 self.db
-                    .insert(&tmp_docid, sdi)
+                    .insert(&tmp_docid, sdi.to_vec())
                     .expect("Could not insert DocInfo into db");
                 Some(intid)
             }
@@ -202,7 +213,7 @@ impl DocsDb {
 // This is kept on disk and brought into memory completely when
 // we use it.
 // TODO why don't we just keep the offsets in here? Why DocInfo?
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Encode, Decode)]
 pub struct Dict {
     pub m: HashMap<String, usize>, // map token to internal tokid
     pub df: HashMap<usize, f32>,   // df for each tokid
@@ -217,9 +228,10 @@ impl Dict {
             last_tokid: 1,
         }
     }
-    pub fn load(filename: &str) -> Result<Dict> {
-        let mut infp = BufReader::new(File::open(filename)?);
-        bincode::deserialize_from::<&mut BufReader<File>, Dict>(&mut infp)
+    pub fn load(filename: &str) -> Dict {
+        let mut infp = BufReader::new(File::open(filename).expect("Error opening Dict file"));
+        bincode::decode_from_std_read(&mut infp, bincode::config::standard())
+            .expect("Error reading Dict")
     }
     pub fn has_tok(&self, tok: String) -> bool {
         self.m.contains_key(&tok)
@@ -241,7 +253,8 @@ impl Dict {
     }
     pub fn save(&self, filename: &str) -> std::io::Result<()> {
         let mut outfp = BufWriter::new(File::create(filename)?);
-        bincode::serialize_into(&mut outfp, self).expect("Error writing dictionary");
+        bincode::encode_into_std_write(self, &mut outfp, bincode::config::standard())
+            .expect("Error writing Dict");
         outfp.flush()?;
         Ok(())
     }
@@ -251,7 +264,7 @@ impl Dict {
 // This is where we learned that core Rust refuses to
 // sort floats because maybe NaN.  There is a create
 // called OrderedFloat that we use.  #ffs
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Encode, Decode)]
 pub struct FeaturePair {
     pub id: usize,
     pub value: f32,
@@ -262,7 +275,7 @@ pub struct FeaturePair {
 // the score_collection function in main, we compute scores
 // by iterating the FeatureVec file.  That's pretty fast
 // up until a million docs or so.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Encode, Decode)]
 pub struct FeatureVec {
     pub docid: String,
     pub features: Vec<FeaturePair>,
@@ -277,11 +290,11 @@ impl FeatureVec {
             squared_norm: 0.0,
         }
     }
-    pub fn read_from(fp: &mut BufReader<File>) -> Result<FeatureVec> {
-        bincode::deserialize_from::<&mut BufReader<File>, FeatureVec>(fp)
+    pub fn read_from(fp: &mut BufReader<File>) -> Result<FeatureVec, DecodeError> {
+        bincode::decode_from_std_read(fp, bincode::config::standard())
     }
-    pub fn write_to(&self, fp: BufWriter<File>) -> Result<()> {
-        bincode::serialize_into(fp, self).expect("Error writing FeatureVec");
+    pub fn write_to(&self, mut fp: BufWriter<File>) -> Result<(), EncodeError> {
+        let _ = bincode::encode_into_std_write(self, &mut fp, bincode::config::standard());
         Ok(())
     }
     pub fn num_features(&self) -> usize {

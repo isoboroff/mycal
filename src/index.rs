@@ -1,5 +1,5 @@
+use bincode::{Decode, Encode};
 use log::debug;
-use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     fmt::Display,
@@ -145,7 +145,7 @@ pub enum Token {
     None,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Encode, Decode)]
 pub struct PostInfo {
     offset: u64,
     len: usize,
@@ -155,17 +155,21 @@ pub struct InvertedFile {
     inv_filename: PathBuf,
     offsets: HashMap<usize, PostInfo>,
     cache: HashMap<usize, PostingList>,
+    bincode_config: bincode::config::Configuration,
 }
 
 impl InvertedFile {
     pub fn open(path: &str) -> Result<InvertedFile, std::io::Error> {
         let offfile = File::open(Path::new(path).with_extension("off"))?;
+        let mut offreader = BufReader::new(offfile);
+        let config = bincode::config::standard();
         let offsets: HashMap<usize, PostInfo> =
-            bincode::deserialize_from::<File, HashMap<usize, PostInfo>>(offfile).unwrap();
+            bincode::decode_from_std_read(&mut offreader, config).unwrap();
         Ok(InvertedFile {
             inv_filename: Path::new(path).with_extension("inv"),
             offsets: offsets,
             cache: HashMap::new(),
+            bincode_config: config,
         })
     }
     pub fn new(path: &Path) -> InvertedFile {
@@ -173,6 +177,7 @@ impl InvertedFile {
             inv_filename: Path::new(path).with_extension("inv"),
             offsets: HashMap::new(),
             cache: HashMap::new(),
+            bincode_config: bincode::config::standard(),
         }
     }
     pub fn add_posting(&mut self, tokid: usize, docid: u32, tf: u32) {
@@ -210,7 +215,8 @@ impl InvertedFile {
             pl.serialize_into(&mut buf);
             invfile.write_all(buf.as_slice()).unwrap();
         }
-        let mut offfile = File::create(self.inv_filename.with_extension("off")).unwrap();
-        bincode::serialize_into(&mut offfile, &self.offsets).unwrap();
+        let offfile = File::create(self.inv_filename.with_extension("off")).unwrap();
+        let mut offwriter = BufWriter::new(offfile);
+        bincode::encode_into_std_write(&self.offsets, &mut offwriter, self.bincode_config).unwrap();
     }
 }

@@ -102,13 +102,14 @@ fn train_qrels(
     let docsdb_file = coll_prefix.to_string() + ".lib";
     let dict_file = coll_prefix.to_string() + ".dct";
     let feat_file = coll_prefix.to_string() + ".ftr";
+    let bincode_config = bincode::config::standard();
 
-    let dict = Dict::load(&dict_file).unwrap();
+    let dict = Dict::load(&dict_file);
 
     let model_path = Path::new(model_file);
     let mut model: Classifier;
     if model_path.exists() {
-        model = Classifier::load(model_file).unwrap();
+        model = Classifier::load(model_file, bincode_config).unwrap();
     } else {
         model = Classifier::new(dict.m.len(), 200000);
     }
@@ -137,7 +138,7 @@ fn train_qrels(
         .for_each(|fields: Vec<String>| {
             if let Some(dib) = docs.db.get(&fields[2]).unwrap() {
                 using.insert(fields[2].clone());
-                let di: DocInfo = bincode::deserialize(&dib).unwrap();
+                let di: DocInfo = bincode::decode_from_slice(&dib, bincode_config).unwrap().0;
                 feats
                     .seek(SeekFrom::Start(di.offset))
                     .expect("Seek error in feats");
@@ -163,8 +164,9 @@ fn train_qrels(
     let num_neg = qrels_args.get_one::<usize>("negatives").unwrap();
     if *num_neg > 0 {
         let docvec_file = coll_prefix.to_string() + ".dvc";
-        let docvec_fp = BufReader::new(File::open(docvec_file)?);
-        let docvec: Vec<DocInfo> = bincode::deserialize_from(docvec_fp).unwrap();
+        let mut docvec_fp = BufReader::new(File::open(docvec_file)?);
+        let docvec: Vec<DocInfo> =
+            bincode::decode_from_std_read(&mut docvec_fp, bincode_config).unwrap();
         let mut rng = rand::rng();
 
         docvec
@@ -189,7 +191,7 @@ fn score_collection(
     model_file: &str,
     score_args: &ArgMatches,
 ) -> Result<Vec<DocScore>, std::io::Error> {
-    let model = Classifier::load(model_file).unwrap();
+    let model = Classifier::load(model_file, bincode::config::standard()).unwrap();
     let n = score_args.get_one::<usize>("num_scores").unwrap();
     let exclude_fn = score_args.get_one::<String>("exclude");
 
@@ -246,14 +248,14 @@ fn score_one_doc(
 
     let docsdb_file = coll_prefix.to_string() + ".lib";
     let feat_file = coll_prefix.to_string() + ".ftr";
-
-    let model = Classifier::load(model_file).unwrap();
+    let bincode_config = bincode::config::standard();
+    let model = Classifier::load(model_file, bincode_config).unwrap();
 
     let docs = DocsDb::open(&docsdb_file);
     let mut feats = BufReader::new(File::open(feat_file).expect("Could not open feature file"));
 
     let dib = docs.db.get(docid).unwrap().unwrap();
-    let di: DocInfo = bincode::deserialize(&dib).unwrap();
+    let di: DocInfo = bincode::decode_from_slice(&dib, bincode_config).unwrap().0;
     feats.seek(SeekFrom::Start(di.offset))?;
     let fv = FeatureVec::read_from(&mut feats).expect("Error deserializing feature vec");
 

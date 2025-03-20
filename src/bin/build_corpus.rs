@@ -43,7 +43,7 @@ impl Config {
 
 fn main() -> Result<(), std::io::Error> {
     let args = Cli::parse();
-
+    let bincode_config = bincode::config::standard();
     // First pass: collect dictionary, df counts
     println!("First pass, collect dictionary and docfeqs");
     let mut dict: Dict = Dict::new();
@@ -85,7 +85,8 @@ fn main() -> Result<(), std::io::Error> {
             .for_each(|fv| {
                 let _ = progress.update(1);
                 num_docs += 1;
-                bincode::serialize_into(&mut binout, &fv).expect("Error writing to bin file");
+                bincode::encode_into_std_write(fv, &mut binout, bincode_config)
+                    .expect("Error writing to bin file");
             });
 
         binout.flush()?;
@@ -137,7 +138,8 @@ fn main() -> Result<(), std::io::Error> {
             println!("oh shit: {}", intid);
         }
         library.docs[intid].offset = binout.stream_position().unwrap();
-        bincode::serialize_into(&mut binout, &new_fv).expect("Error writing to final bin file");
+        bincode::encode_into_std_write(new_fv, &mut binout, bincode_config)
+            .expect("Error writing to final bin file");
         binout.flush()?;
 
         lib.insert_batch(&library.docs[intid].docid, &library.docs[intid], 100_000);
