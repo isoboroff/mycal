@@ -1,7 +1,11 @@
+use bincode::{Decode, Encode};
+use bytesize::MB;
 use clap::Parser;
 use kdam::{tqdm, BarExt};
 use log::{log_enabled, Level};
 use mycal::{
+    external_sort,
+    extsort::SerializeDeserialize,
     index::InvertedFile,
     tok::{get_tokenizer, tokenize_and_map},
     utils, Dict, DocInfo, DocsDb, FeatureVec,
@@ -9,15 +13,19 @@ use mycal::{
 use serde_json::{from_str, Map, Value};
 use std::{
     fs::File,
-    io::{BufRead, BufWriter, Seek},
+    io::{BufRead, BufReader, BufWriter, Seek, Write},
+    iter,
     path::Path,
 };
 
-// This is an in-memory inversion.  Inverting the Chinese
-// NeuCLIR collection, with 3-grams as features
-// required 45GB of RAM.
-// Consider build_mapred for something more scalable.  Esp
-// once it gets an external sort.
+#[derive(
+    Clone, Encode, Decode, PartialEq, Eq, Ord, PartialOrd, serde::Serialize, serde::Deserialize,
+)]
+struct PTuple {
+    tok: usize,
+    docid: u32,
+    count: u32,
+}
 
 fn build_index(args: Cli) -> Result<(), std::io::Error> {
     let mut dict = Dict::new();
@@ -29,47 +37,81 @@ fn build_index(args: Cli) -> Result<(), std::io::Error> {
     let bincode_config = bincode::config::standard();
 
     println!("First pass: tokenizing, indexing, storing features");
-    let num_docs: u32 = 0;
+    let mut num_docs: u32 = 0;
+    let mut postings_out = BufWriter::new(File::create(format!("{}.tmp", args.out_prefix))?);
+    let mut postcount: u32 = 0;
+    let mut bar;
+
     for bundle in args.bundles {
         let tokenizer = get_tokenizer(args.tokenizer.as_ref().expect("Unknown tokenizer"));
         let mut reader = utils::reader(&bundle);
 
         let num_lines = reader.lines().count();
-        let mut bar = tqdm!(total = num_lines);
+        bar = tqdm!(total = num_lines);
         reader = utils::reader(&bundle);
 
+        println!("Tokenizing, saving feature vectors and docinfos");
         for line in reader.lines() {
             bar.update(1)?;
+            num_docs += 1;
             let docmap = from_str::<Map<String, Value>>(&line.unwrap()).unwrap();
             let (docid, docmap) =
                 tokenize_and_map(docmap, &tokenizer, &mut dict, &args.docid, &args.body);
-            let intid = docsdb.add_doc(&docid).unwrap();
-            assert_ne!(0, intid);
             let mut fv = FeatureVec::new(docid.clone());
             for (tok, count) in docmap {
-                invfile.add_posting(tok, intid, count);
-                let df = count as f32;
-                fv.push(tok, df);
+                let pt = PTuple {
+                    tok: tok,
+                    docid: num_docs,
+                    count: count,
+                };
+                pt.serialize(&mut postings_out, bincode_config)
+                    .expect("Error writing postings");
+                fv.push(tok, count as f32);
+                postcount += 1;
             }
             let offset = featfile.stream_position().unwrap();
             bincode::encode_into_std_write(fv, &mut featfile, bincode_config)
                 .expect("Error writing feature vec");
             let di = DocInfo {
-                intid,
+                intid: num_docs,
                 docid: docid.clone(),
                 offset,
             };
             docsdb.insert_batch(&docid, &di, 100_000);
-            docsdb.insert_batch(format!("{}", intid).as_str(), &di, 100_000);
         }
     }
-    invfile.save();
+
     docsdb.process_remaining();
     let _ = docsdb.ext2int.flush();
+    postings_out.flush().unwrap();
+    std::mem::drop(postings_out);
 
-    println!("Second pass: precompute IDF");
+    println!("Sorting postings");
+    let post_in = format!("{}.tmp", args.out_prefix);
+    let post_out = format!("{}.pst", args.out_prefix);
+    external_sort::<PTuple>(
+        &post_in,
+        &post_out,
+        100 * MB as usize,
+        "./tmp",
+        bincode_config,
+    )?;
+
+    println!("Adding postings");
+    bar = tqdm!(total = postcount as usize);
+    let mut postings = BufReader::new(File::open(post_out)?);
+    for p in iter::from_fn(move || PTuple::deserialize(&mut postings, bincode_config).ok()) {
+        bar.update(1)?;
+        invfile.add_posting(p.tok, p.docid, p.count);
+    }
+
+    invfile.save();
+
+    println!("Precompute IDF");
     let mut new_dict = Dict::new();
+    bar = tqdm!(total = dict.m.len());
     dict.m.drain().for_each(|(_tok, tokid)| {
+        let _ = bar.update(1);
         if let Some(df) = dict.df.get(&tokid) {
             new_dict.df.insert(tokid, (num_docs as f32 / df).log10());
         }

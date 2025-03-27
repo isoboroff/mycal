@@ -12,8 +12,10 @@ pub use classifier::Classifier;
 pub mod tok;
 pub use tok::Tokenizer;
 pub mod compress;
+pub mod extsort;
 pub mod index;
 pub mod utils;
+pub use extsort::{external_sort, SerializeDeserialize};
 
 // DocInfos help us find the document features in the feature vec file
 #[derive(Debug, Encode, Decode, Clone, Eq, PartialEq, Ord, PartialOrd)]
@@ -65,67 +67,108 @@ impl Docs {
 // swerialization.
 pub struct DocsDb {
     // Sled-based docid -> DocInfo table
-    pub filename: String,
-    pub db: sled::Db,
+    pub prefix: String,
+    pub ext2int: sled::Db,
+    pub int2ext: sled::Db,
     pub next_intid: u32,
 
-    batch: sled::Batch,
+    e2i_batch: sled::Batch,
+    i2e_batch: sled::Batch,
     batch_len: usize,
     bincode_config: bincode::config::Configuration,
 }
 
 impl DocsDb {
     // for reading
-    pub fn open(filename: &str) -> DocsDb {
-        let conf = sled::Config::default()
-            .path(filename.to_owned())
+    pub fn open(prefix: &str) -> DocsDb {
+        let e2i_path = format!("{}.e2i", prefix);
+        let i2e_path = format!("{}.i2e", prefix);
+        if let Ok(ext2int) = sled::Config::default()
             .cache_capacity(10_000_000)
             .use_compression(false)
-            .mode(sled::Mode::LowSpace);
-        let db = conf.open().unwrap();
+            .path(e2i_path)
+            .mode(sled::Mode::LowSpace)
+            .open()
+        {
+            if let Ok(int2ext) = sled::Config::default()
+                .cache_capacity(10_000_000)
+                .use_compression(false)
+                .path(i2e_path)
+                .mode(sled::Mode::LowSpace)
+                .open()
+            {
+                return DocsDb {
+                    prefix: prefix.to_string(),
+                    ext2int: ext2int.clone(),
+                    int2ext: int2ext.clone(),
+                    next_intid: 1,
+                    e2i_batch: sled::Batch::default(),
+                    i2e_batch: sled::Batch::default(),
+                    batch_len: 0,
+                    bincode_config: bincode::config::standard(),
+                };
+            } else {
+                panic!("Could not open i2e database");
+            }
+        } else {
+            panic!("Could not open e2i database");
+        }
+    }
+
+    pub fn create(prefix: &str) -> DocsDb {
+        let e2i_conf = sled::Config::default()
+            .cache_capacity(10_000_000)
+            .use_compression(false)
+            .path(format!("{}.e2i", prefix))
+            .mode(sled::Mode::HighThroughput)
+            .open();
+        let i2e_conf = sled::Config::default()
+            .cache_capacity(10_000_000)
+            .use_compression(false)
+            .path(format!("{}.i2e", prefix))
+            .mode(sled::Mode::HighThroughput)
+            .open();
 
         DocsDb {
-            filename: filename.to_string(),
-            db,
+            prefix: prefix.to_string(),
+            ext2int: e2i_conf.expect("Couldn't open e2i"),
+            int2ext: i2e_conf.expect("Couldn't open i2e"),
             next_intid: 1,
-            batch: sled::Batch::default(),
+            e2i_batch: sled::Batch::default(),
+            i2e_batch: sled::Batch::default(),
             batch_len: 0,
             bincode_config: bincode::config::standard(),
         }
     }
 
-    // for writing
-    pub fn create(filename: &str) -> DocsDb {
-        let conf = sled::Config::default()
-            .path(filename.to_owned())
-            .cache_capacity(10_000_000)
-            .use_compression(false)
-            .mode(sled::Mode::HighThroughput);
-        let db = conf.open().unwrap();
-
-        DocsDb {
-            filename: filename.to_string(),
-            db,
-            next_intid: 1,
-            batch: sled::Batch::default(),
-            batch_len: 0,
-            bincode_config: bincode::config::standard(),
-        }
-    }
-
-    pub fn get(&self, docid: &str) -> Option<DocInfo> {
-        self.db.get(docid).unwrap().map(|ivec| {
+    pub fn get_docid(&self, docid: &str) -> Option<DocInfo> {
+        self.ext2int.get(docid).unwrap().map(|ivec| {
             bincode::decode_from_slice::<DocInfo, Configuration>(&ivec, self.bincode_config)
                 .unwrap()
                 .0
         })
     }
 
+    pub fn get_intid(&self, intid: u32) -> Option<DocInfo> {
+        self.int2ext
+            .get(u32::to_be_bytes(intid))
+            .unwrap()
+            .map(|ivec| {
+                bincode::decode_from_slice::<DocInfo, Configuration>(&ivec, self.bincode_config)
+                    .unwrap()
+                    .0
+            })
+    }
+
     pub fn insert(&self, docid: &str, di: &DocInfo) -> Option<sled::IVec> {
         let dib = bincode::encode_to_vec::<DocInfo, Configuration>(di.clone(), self.bincode_config)
             .unwrap();
         // not happy about the error reporting here...
-        self.db.insert(docid, dib.to_vec()).ok().unwrap()
+        self.int2ext
+            .insert(u32::to_be_bytes(di.intid), dib.to_vec())
+            .ok()
+            .unwrap();
+        self.ext2int.insert(docid, dib.to_vec()).ok().unwrap()
     }
 
     pub fn insert_batch(&mut self, docid: &str, di: &DocInfo, batch_size: usize) {
@@ -134,20 +177,34 @@ impl DocsDb {
         if self.batch_len > batch_size {
             // We need to use swap because apply_batch consumes the batch
             let mut local_batch = sled::Batch::default();
-            std::mem::swap(&mut local_batch, &mut self.batch);
-            self.db.apply_batch(local_batch).expect("Batch apply fail");
+            std::mem::swap(&mut local_batch, &mut self.e2i_batch);
+            self.ext2int
+                .apply_batch(local_batch)
+                .expect("Batch apply fail");
+            local_batch = sled::Batch::default();
+            std::mem::swap(&mut local_batch, &mut self.i2e_batch);
+            self.int2ext
+                .apply_batch(local_batch)
+                .expect("Batch apply fail");
             self.batch_len = 0;
         }
-        self.batch.insert(docid, dib.to_vec());
+        self.e2i_batch.insert(docid, dib.to_vec());
+        self.i2e_batch
+            .insert(&u32::to_be_bytes(di.intid), dib.to_vec());
         self.batch_len += 1;
     }
 
     pub fn process_remaining(&mut self) {
         if self.batch_len > 0 {
-            let mut batch_to_send = sled::Batch::default();
-            std::mem::swap(&mut batch_to_send, &mut self.batch);
-            self.db
-                .apply_batch(batch_to_send)
+            let mut local_batch = sled::Batch::default();
+            std::mem::swap(&mut local_batch, &mut self.e2i_batch);
+            self.ext2int
+                .apply_batch(local_batch)
+                .expect("Batch apply fail");
+            local_batch = sled::Batch::default();
+            std::mem::swap(&mut local_batch, &mut self.i2e_batch);
+            self.int2ext
+                .apply_batch(local_batch)
                 .expect("Batch apply fail");
             self.batch_len = 0;
         }
@@ -165,23 +222,9 @@ impl DocsDb {
     //     Ok(())
     // }
 
-    pub fn get_intid(&self, docid: &str) -> Option<u32> {
-        let tmp_docid = docid.to_string();
-        let docinfo = self.db.get(tmp_docid).unwrap();
-        match docinfo {
-            Some(bytes) => {
-                let di: DocInfo = bincode::decode_from_slice(&bytes, self.bincode_config)
-                    .unwrap()
-                    .0;
-                Some(di.intid)
-            }
-            None => None,
-        }
-    }
-
     pub fn add_doc(&mut self, docid: &str) -> Option<u32> {
         let tmp_docid = docid.to_string();
-        let tmp_di = self.db.get(&tmp_docid).unwrap();
+        let tmp_di = self.ext2int.get(&tmp_docid).unwrap();
         match tmp_di {
             Some(di) => {
                 let ddi: DocInfo = bincode::decode_from_slice(&di, self.bincode_config)
@@ -199,7 +242,7 @@ impl DocsDb {
                     offset: 0,
                 };
                 let sdi = bincode::encode_to_vec(new_di, self.bincode_config).unwrap();
-                self.db
+                self.ext2int
                     .insert(&tmp_docid, sdi.to_vec())
                     .expect("Could not insert DocInfo into db");
                 Some(intid)

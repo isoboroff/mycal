@@ -30,7 +30,7 @@ fn main() -> Result<()> {
     //    .unwrap();
 
     println!("Fetching docinfo...");
-    let docinfo = match docs.get(&args.docid) {
+    let docinfo = match docs.get_docid(&args.docid) {
         Some(di) => di,
         None => panic!("Document {} not found", args.docid),
     };

@@ -136,7 +136,7 @@ fn train_qrels(
             line.split_whitespace().map(|x| x.to_string()).collect()
         })
         .for_each(|fields: Vec<String>| {
-            if let Some(dib) = docs.db.get(&fields[2]).unwrap() {
+            if let Some(dib) = docs.ext2int.get(&fields[2]).unwrap() {
                 using.insert(fields[2].clone());
                 let di: DocInfo = bincode::decode_from_slice(&dib, bincode_config).unwrap().0;
                 feats
@@ -157,6 +157,8 @@ fn train_qrels(
                     pos.push(fv);
                     println!("qrels-pos {} {}", fields[2], fields[3]);
                 };
+            } else {
+                println!("Document not found: {}", fields[2]);
             }
         });
 
@@ -254,7 +256,7 @@ fn score_one_doc(
     let docs = DocsDb::open(&docsdb_file);
     let mut feats = BufReader::new(File::open(feat_file).expect("Could not open feature file"));
 
-    let dib = docs.db.get(docid).unwrap().unwrap();
+    let dib = docs.ext2int.get(docid).unwrap().unwrap();
     let di: DocInfo = bincode::decode_from_slice(&dib, bincode_config).unwrap().0;
     feats.seek(SeekFrom::Start(di.offset))?;
     let fv = FeatureVec::read_from(&mut feats).expect("Error deserializing feature vec");

@@ -33,7 +33,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let docsdb = DocsDb::open(&docsdb_file);
     let bincode_config = bincode::config::standard();
 
-    let offsets: Vec<u64> = tqdm!(docsdb.db.iter())
+    let offsets: Vec<u64> = tqdm!(docsdb.ext2int.iter())
         .map(|r| r.unwrap().1)
         .map(|v| bincode::decode_from_slice(&v, bincode_config).unwrap().0)
         .collect();

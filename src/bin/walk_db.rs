@@ -14,18 +14,23 @@ fn main() -> Result<()> {
 
     let root = Path::new(".");
     let _dict_file = root.join(format!("{}.dct", args.coll_prefix));
-    let docs_file = root.join(format!("{}.lib", args.coll_prefix));
     let bincode_config = bincode::config::standard();
 
     println!("Opening database...");
-    let docs = DocsDb::open(docs_file.to_str().unwrap());
-    // let db = Config::new(docs_file);
-    // let store = Store::new(db).unwrap();
-    // let bucket = store
-    //    .bucket::<String, Bincode<DocInfo>>(Some("docinfo"))
-    //    .unwrap();
+    let docs = DocsDb::open(&args.coll_prefix);
 
-    docs.db
+    docs.ext2int
+        .iter()
+        .map(|res| res.unwrap())
+        .map(|(k, v)| {
+            (
+                String::from_utf8(k.to_vec()),
+                bincode::decode_from_slice::<DocInfo, Configuration>(&v, bincode_config),
+            )
+        })
+        .for_each(|(k, v)| println!("{:?} {:?}", k, v));
+
+    docs.int2ext
         .iter()
         .map(|res| res.unwrap())
         .map(|(k, v)| {
