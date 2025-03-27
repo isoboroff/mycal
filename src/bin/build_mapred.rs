@@ -1,5 +1,5 @@
 use bincode::{Decode, Encode};
-use bytesize::MB;
+use bytesize::{GB, MB};
 use clap::Parser;
 use kdam::{tqdm, BarExt};
 use log::{log_enabled, Level};
@@ -18,9 +18,7 @@ use std::{
     path::Path,
 };
 
-#[derive(
-    Clone, Encode, Decode, PartialEq, Eq, Ord, PartialOrd, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Clone, Encode, Decode, PartialEq, Eq, Ord, PartialOrd)]
 struct PTuple {
     tok: usize,
     docid: u32,
@@ -89,33 +87,45 @@ fn build_index(args: Cli) -> Result<(), std::io::Error> {
     println!("Sorting postings");
     let post_in = format!("{}.tmp", args.out_prefix);
     let post_out = format!("{}.pst", args.out_prefix);
-    external_sort::<PTuple>(
-        &post_in,
-        &post_out,
-        100 * MB as usize,
-        "./tmp",
-        bincode_config,
-    )?;
+    external_sort::<PTuple>(&post_in, &post_out, 10_000_000, "./tmp", bincode_config)?;
 
     println!("Adding postings");
     bar = tqdm!(total = postcount as usize);
+    let mut last_tok = 0;
     let mut postings = BufReader::new(File::open(post_out)?);
     for p in iter::from_fn(move || PTuple::deserialize(&mut postings, bincode_config).ok()) {
         bar.update(1)?;
+        // Check if we should dump, but only after we have the complete posting list for a token.
+        if p.tok != last_tok {
+            last_tok = p.tok;
+            if invfile.memusage() > 100 * MB as u32 {
+                let _ = invfile.save()?;
+            }
+        }
         invfile.add_posting(p.tok, p.docid, p.count);
     }
 
-    invfile.save();
+    if invfile.memusage() > 0 {
+        let _ = invfile.save()?;
+    }
+
+    std::fs::remove_file(post_in)?;
 
     println!("Precompute IDF");
     let mut new_dict = Dict::new();
+    let mut last_tokid = 0;
     bar = tqdm!(total = dict.m.len());
-    dict.m.drain().for_each(|(_tok, tokid)| {
+    dict.m.drain().for_each(|(tok, tokid)| {
         let _ = bar.update(1);
         if let Some(df) = dict.df.get(&tokid) {
+            new_dict.m.insert(tok, tokid);
+            if tokid > last_tokid {
+                last_tokid = tokid;
+            }
             new_dict.df.insert(tokid, (num_docs as f32 / df).log10());
         }
     });
+    new_dict.last_tokid = last_tokid;
     new_dict
         .save(&format!("{}.dct", &args.out_prefix))
         .expect("Problem writing dict");

@@ -3,7 +3,7 @@ use log::debug;
 use std::{
     collections::HashMap,
     fmt::Display,
-    fs::File,
+    fs::{File, OpenOptions},
     io::{BufReader, BufWriter, Read, Seek, Write},
     path::{Path, PathBuf},
 };
@@ -156,6 +156,7 @@ pub struct InvertedFile {
     offsets: HashMap<usize, PostInfo>,
     cache: HashMap<usize, PostingList>,
     bincode_config: bincode::config::Configuration,
+    cache_count: u32,
 }
 
 impl InvertedFile {
@@ -170,6 +171,7 @@ impl InvertedFile {
             offsets: offsets,
             cache: HashMap::new(),
             bincode_config: config,
+            cache_count: 0,
         })
     }
     pub fn new(path: &Path) -> InvertedFile {
@@ -178,6 +180,7 @@ impl InvertedFile {
             offsets: HashMap::new(),
             cache: HashMap::new(),
             bincode_config: bincode::config::standard(),
+            cache_count: 0,
         }
     }
     pub fn add_posting(&mut self, tokid: usize, docid: u32, tf: u32) {
@@ -185,6 +188,7 @@ impl InvertedFile {
         let pl = self.cache.entry(tokid).or_insert(PostingList::new());
         pl.add_posting(docid, tf);
     }
+
     pub fn get_posting_list(&mut self, tokid: usize) -> Result<PostingList, std::io::Error> {
         if self.cache.contains_key(&tokid) {
             Ok(self.cache.get(&tokid).unwrap().clone())
@@ -196,6 +200,7 @@ impl InvertedFile {
             let mut bytes = vec![0; pi.len].into_boxed_slice();
             invfile.read_exact(&mut bytes).unwrap();
             let pl = PostingList::deserialize(&mut MagicEncodedBuffer::from_vec((*bytes).to_vec()));
+            self.cache.insert(tokid, pl.clone());
             Ok(pl)
         } else {
             Err(std::io::Error::new(
@@ -204,19 +209,40 @@ impl InvertedFile {
             ))
         }
     }
-    pub fn save(&mut self) {
-        let file = File::create(&self.inv_filename).unwrap();
-        let mut invfile = BufWriter::new(file);
+
+    pub fn memusage(&self) -> u32 {
+        self.cache_count * std::mem::size_of::<Posting>() as u32
+    }
+
+    // Append cache to the inverted file and dump the offset table
+    // Clears the cache
+    pub fn save(&mut self) -> std::io::Result<()> {
+        let file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .append(true)
+            .open(&self.inv_filename)?;
+        let mut invfile: BufWriter<File> = BufWriter::new(file);
+
         for (tokid, pl) in &mut self.cache {
-            let offset = invfile.stream_position().unwrap();
+            let offset = invfile.stream_position()?;
             let bytes = pl.bytes_to_serialize();
             self.offsets.insert(*tokid, PostInfo { offset, len: bytes });
             let mut buf = MagicEncodedBuffer::new_with_capacity(bytes);
             pl.serialize_into(&mut buf);
-            invfile.write_all(buf.as_slice()).unwrap();
+            invfile.write_all(buf.as_slice())?;
         }
-        let offfile = File::create(self.inv_filename.with_extension("off")).unwrap();
+        self.cache = HashMap::new();
+        self.cache_count = 0;
+
+        let offfile = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(self.inv_filename.with_extension("off"))?;
         let mut offwriter = BufWriter::new(offfile);
-        bincode::encode_into_std_write(&self.offsets, &mut offwriter, self.bincode_config).unwrap();
+        match bincode::encode_into_std_write(&self.offsets, &mut offwriter, self.bincode_config) {
+            Err(e) => Err(std::io::Error::new(std::io::ErrorKind::Other, e)),
+            Ok(_bytes) => Ok(()),
+        }
     }
 }

@@ -1,9 +1,23 @@
+//! An external sort crate based on bincode serialization and
+//! deserialization.  As long as the underlying object being
+//! sorted implements Clone, Encode, Decode, PartialEq, Eq, Ord,
+//! PartialOrd, it can be sorted using this crate.
+//!
+//! Individual chunks are sorted as vectors, then all the chunks
+//! are merged into a single sorted file.
+//!
+//! Bugs
+//! - the final merge could be done faster using a real data
+//! structure and not just sorting the head items each time.
+
 use bincode::config::Configuration;
 use bincode::{decode_from_std_read, encode_into_std_write, Decode, Encode};
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 
-// Define a trait for serializing and deserializing data
+/// Define a trait for serializing and deserializing data
+/// Your struct should implement or derive Clone, Encode,
+/// Decode, PartialEq, Eq, Ord, PartialOrd
 pub trait SerializeDeserialize: Sized {
     fn serialize(
         &self,
@@ -13,7 +27,9 @@ pub trait SerializeDeserialize: Sized {
     fn deserialize(reader: &mut impl Read, config: Configuration) -> Result<Self, std::io::Error>;
 }
 
-// Implement SerializeDeserialize for types that implement Encode and Decode
+/// Implement SerializeDeserialize for types that implement Encode and Decode
+/// Your type only needs to implement Encode and Decode; this then comes for
+/// free.
 impl<T: Encode + Decode<()>> SerializeDeserialize for T {
     fn serialize(
         &self,
@@ -35,7 +51,12 @@ struct RunFiles {
     files: Vec<String>,
 }
 
-// Define the external sorting function
+/// The main entry point.
+/// input_file and output_file are pathnames.  The input_file is the file to be
+/// sorted, and output_file is the final sorted file.
+/// buffer_size is the number of objects to be read for each chunk.
+/// temp_dir is where sorted sub-files are stored.
+/// config is a bincode::config::Configuration object
 pub fn external_sort<T: SerializeDeserialize + Ord + Clone>(
     input_file: &str,
     output_file: &str,

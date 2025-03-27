@@ -1,5 +1,6 @@
 use clap::{Arg, ArgMatches, Command};
 use kdam::{tqdm, BarExt};
+use log::debug;
 use min_max_heap::MinMaxHeap;
 use mycal::{Classifier, Dict, DocInfo, DocScore, DocsDb, FeatureVec};
 use ordered_float::OrderedFloat;
@@ -78,6 +79,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let coll_prefix = args.get_one::<String>("coll").unwrap();
     let model_file = args.get_one::<String>("model").unwrap();
 
+    env_logger::init();
+
     match args.subcommand() {
         Some(("train", qrels_args)) => {
             train_qrels(coll_prefix, model_file, qrels_args)?;
@@ -99,22 +102,31 @@ fn train_qrels(
     model_file: &str,
     qrels_args: &ArgMatches,
 ) -> Result<Classifier, std::io::Error> {
-    let docsdb_file = coll_prefix.to_string() + ".lib";
     let dict_file = coll_prefix.to_string() + ".dct";
     let feat_file = coll_prefix.to_string() + ".ftr";
     let bincode_config = bincode::config::standard();
 
-    let dict = Dict::load(&dict_file);
+    debug!("Loading dictionary");
+    let dict = Dict::load(&dict_file)?;
+    debug!(
+        "dict sizes are {} {} {}",
+        dict.m.len(),
+        dict.df.len(),
+        dict.last_tokid
+    );
 
     let model_path = Path::new(model_file);
     let mut model: Classifier;
     if model_path.exists() {
+        debug!("Loading model from {}", model_file);
         model = Classifier::load(model_file, bincode_config).unwrap();
     } else {
+        debug!("Creating new model of dim {}", dict.m.len());
         model = Classifier::new(dict.m.len(), 200000);
     }
 
-    let docs = DocsDb::open(&docsdb_file);
+    debug!("Opening DocsDb and feature file");
+    let docs = DocsDb::open(&coll_prefix);
     let mut feats = BufReader::new(File::open(feat_file).expect("Could not open feature file"));
 
     let qrels_file = qrels_args.get_one::<String>("qrels_file").unwrap();
@@ -128,6 +140,7 @@ fn train_qrels(
     Read a qrels-formatted file specifying the training documents.
     Get each document's feature vector and add it to the appropriate list (pos or neg)
     */
+    debug!("Getting examples from qrels file");
     qrels
         .lines()
         .filter(|result| !result.as_ref().unwrap().starts_with('#'))
