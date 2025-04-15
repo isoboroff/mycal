@@ -60,7 +60,7 @@ impl OnDiskCompressedHash {
         if self.finalized {
             panic!("Cannot save a finalized OnDiskCompressedHash");
         }
-        self.idx.sort();
+        // Do not do this: self.idx.sort();
         let encoded = encode_to_vec(&self.idx, bincode::config::standard())?;
         let fp = File::create(filename).unwrap();
         let mut compressed = FrameEncoder::new(fp);

@@ -19,6 +19,7 @@ pub use extsort::external_sort;
 pub mod store;
 pub use store::Store;
 pub mod odch;
+pub mod ptuple;
 
 // DocInfos help us find the document features in the feature vec file
 #[derive(Debug, Encode, Decode, Clone, Eq, PartialEq, Ord, PartialOrd)]

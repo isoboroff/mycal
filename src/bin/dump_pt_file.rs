@@ -1,15 +1,8 @@
 use bincode::{Decode, Encode};
 use clap::Parser;
 use log::{log_enabled, Level};
+use mycal::ptuple::PTuple;
 use std::{fs::File, io::BufReader};
-
-// Can't figure out how to just use this from build_mapred.rs
-#[derive(Clone, Encode, Decode, PartialEq, Eq, Ord, PartialOrd, Debug)]
-pub struct PTuple {
-    tok: usize,
-    docid: String,
-    count: u32,
-}
 
 fn dump_pt_file(filename: String) -> Result<(), Box<dyn std::error::Error>> {
     let mut fp = BufReader::new(File::open(filename)?);

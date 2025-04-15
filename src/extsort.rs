@@ -226,11 +226,11 @@ where
 mod tests {
     use std::{
         fs::File,
-        io::{BufReader, BufWriter, Read, Write},
+        io::{BufReader, BufWriter, Write},
     };
 
     use super::external_sort_from;
-    use bincode::{config::Configuration, Decode, Encode};
+    use bincode::{Decode, Encode};
     use rand::distr::{Alphanumeric, SampleString};
 
     #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Encode, Decode)]

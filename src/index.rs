@@ -134,10 +134,10 @@ mod tests {
         env_logger::init();
         let mut pl = PostingList::new();
         let mut rng = rand::rng();
-        for _ in 0..100 {
-            let docid = rng.random_range(1..1000);
+        let docs = rand::seq::index::sample(&mut rng, 1000, 100);
+        for d in docs {
             let tf = rng.random_range(1..100);
-            pl.add_posting(docid, tf);
+            pl.add_posting(d as u32, tf);
         }
         let bytes_needed = pl.bytes_to_serialize();
         let mut buf: MagicEncodedBuffer = MagicEncodedBuffer::new_with_capacity(bytes_needed);
