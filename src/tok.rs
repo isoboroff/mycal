@@ -5,8 +5,6 @@ use std::collections::HashMap;
 use unicode_normalization::UnicodeNormalization;
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::Dict;
-
 pub trait Tokenizer {
     fn tokenize(&self, text: &str) -> Vec<String>;
     fn name(&self) -> String;
@@ -186,11 +184,9 @@ pub fn tokenize(text: &str) -> Vec<String> {
 pub fn tokenize_and_map(
     docmap: serde_json::Map<String, serde_json::Value>,
     tokenizer: &Box<dyn Tokenizer>,
-    dict: &mut Dict,
     docid_field: &String,
     text_field: &String,
-) -> (String, HashMap<usize, u32>) {
-    let mut m: HashMap<usize, u32> = HashMap::new();
+) -> (String, HashMap<String, u32>) {
     let docid = match docmap.contains_key(docid_field) {
         true => docmap[docid_field].as_str().unwrap(),
         false => panic!(
@@ -205,13 +201,10 @@ pub fn tokenize_and_map(
             text_field
         ),
     };
-
-    for x in tokens {
-        let tokid = dict.add_tok(x.to_owned());
-        if !m.contains_key(&tokid) {
-            dict.incr_df(tokid);
-        }
-        *m.entry(tokid).or_insert(0) += 1;
+    let mut m = HashMap::new();
+    for t in tokens {
+        let count = m.entry(t).or_insert(0);
+        *count += 1;
     }
 
     (docid.to_owned(), m)

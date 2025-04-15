@@ -10,45 +10,17 @@
 //! - the final merge could be done faster using a real data
 //! structure and not just sorting the head items each time.
 
-use bincode::config::Configuration;
-use bincode::{decode_from_std_read, encode_into_std_write, Decode, Encode};
+use bincode::{Decode, Encode};
+use kdam::{tqdm, BarExt};
+use rayon::prelude::*;
+use std::collections::BinaryHeap;
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Read, Write};
-
-/// Define a trait for serializing and deserializing data
-/// Your struct should implement or derive Clone, Encode,
-/// Decode, PartialEq, Eq, Ord, PartialOrd
-pub trait SerializeDeserialize: Sized {
-    fn serialize(
-        &self,
-        writer: &mut impl Write,
-        config: Configuration,
-    ) -> Result<usize, std::io::Error>;
-    fn deserialize(reader: &mut impl Read, config: Configuration) -> Result<Self, std::io::Error>;
-}
-
-/// Implement SerializeDeserialize for types that implement Encode and Decode
-/// Your type only needs to implement Encode and Decode; this then comes for
-/// free.
-impl<T: Encode + Decode<()>> SerializeDeserialize for T {
-    fn serialize(
-        &self,
-        writer: &mut impl Write,
-        config: Configuration,
-    ) -> Result<usize, std::io::Error> {
-        encode_into_std_write(self, writer, config)
-            .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))
-    }
-
-    fn deserialize(reader: &mut impl Read, config: Configuration) -> Result<Self, std::io::Error> {
-        decode_from_std_read(reader, config)
-            .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))
-    }
-}
+use std::io::{BufRead, BufReader, BufWriter, Read, Write};
 
 // Define a struct to hold the temporary file names
 struct RunFiles {
     files: Vec<String>,
+    items: u32,
 }
 
 /// The main entry point.
@@ -57,122 +29,194 @@ struct RunFiles {
 /// buffer_size is the number of objects to be read for each chunk.
 /// temp_dir is where sorted sub-files are stored.
 /// config is a bincode::config::Configuration object
-pub fn external_sort<T: SerializeDeserialize + Ord + Clone>(
+pub fn external_sort<T, R, W>(
     input_file: &str,
     output_file: &str,
     buffer_size: usize,
     temp_dir: &str,
-    config: bincode::config::Configuration,
-) -> std::io::Result<()> {
+) -> std::io::Result<()>
+where
+    T: Encode + Decode<()> + Ord + Clone + Send,
+    R: BufRead + Sized,
+    W: Write + Sized,
+{
+    let mut input_fp: BufReader<File> = BufReader::new(File::open(input_file)?);
+    let mut output_fp: BufWriter<File> = BufWriter::new(File::create(output_file)?);
+    external_sort_from::<T, _, _>(&mut input_fp, &mut output_fp, buffer_size, temp_dir)?;
+    Ok(())
+}
+
+pub fn external_sort_from<T, R, W>(
+    input_reader: &mut R,
+    output_writer: &mut W,
+    buffer_size: usize,
+    temp_dir: &str,
+) -> std::io::Result<()>
+where
+    T: Encode + Decode<()> + Ord + Clone + Send,
+    R: BufRead + Sized,
+    W: Write + Sized,
+{
     // Create a directory for temporary files if it doesn't exist
     std::fs::create_dir_all(temp_dir)?;
 
     // Divide the data into runs
-    let run_files = divide_into_runs::<T>(input_file, buffer_size, temp_dir, config)?;
+    println!("dividing into sorted runs");
+    let run_files = divide_into_runs::<T, R>(input_reader, buffer_size, temp_dir)?;
 
     // Merge the sorted runs
-    merge_runs::<T>(output_file, &run_files, buffer_size, config)?;
+    println!("merging runs");
+    merge_runs::<T, W>(output_writer, &run_files)?;
 
     // Remove the temporary run files
     for file in run_files.files {
         std::fs::remove_file(file)?;
     }
     std::fs::remove_dir_all(temp_dir)?;
-
+    output_writer.flush()?;
     Ok(())
 }
 
 // Divide the data into runs
-fn divide_into_runs<T: SerializeDeserialize + Ord + Clone>(
-    input_file: &str,
+fn divide_into_runs<T, R>(
+    input_reader: &mut R,
     buffer_size: usize,
     temp_dir: &str,
-    config: bincode::config::Configuration,
-) -> std::io::Result<RunFiles> {
-    let mut run_files = RunFiles { files: Vec::new() };
+) -> std::io::Result<RunFiles>
+where
+    T: Encode + Decode<()> + Ord + Clone + Send,
+    R: Read + Sized,
+{
+    let mut run_files = RunFiles {
+        files: Vec::new(),
+        items: 0,
+    };
     let mut buffer: Vec<T> = Vec::with_capacity(buffer_size);
-
-    let file = File::open(input_file)?;
-    let mut reader = BufReader::new(file);
+    let config = bincode::config::standard();
 
     loop {
-        let obj = match T::deserialize(&mut reader, config) {
+        let obj = match bincode::decode_from_std_read(input_reader, config) {
             Ok(obj) => obj,
             Err(_) => break,
         };
+        run_files.items += 1;
 
         buffer.push(obj);
 
         if buffer.len() == buffer_size {
             // Sort the buffer
-            buffer.sort();
+            buffer.par_sort();
 
             // Write the sorted buffer to a temporary file
             let file_name = format!("{}/run_{}.bin", temp_dir, run_files.files.len());
             let mut writer = BufWriter::new(File::create(&file_name)?);
             for obj in &buffer {
-                obj.serialize(&mut writer, config)?;
+                bincode::encode_into_std_write(obj, &mut writer, config)
+                    .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
             }
+
             run_files.files.push(file_name.clone());
+            writer.flush()?;
 
             // Clear the buffer
             buffer.clear();
         }
     }
-
     // Write the remaining buffer to a temporary file
     if !buffer.is_empty() {
-        buffer.sort();
+        buffer.par_sort();
 
         let file_name = format!("{}/run_{}.bin", temp_dir, run_files.files.len());
         let mut writer = BufWriter::new(File::create(&file_name)?);
         for obj in &buffer {
-            obj.serialize(&mut writer, config)?;
+            bincode::encode_into_std_write(obj, &mut writer, config)
+                .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
         }
         run_files.files.push(file_name);
+        writer.flush()?;
+
+        println!(
+            "{} chunks of max {} items each, {} items total",
+            run_files.files.len(),
+            buffer_size,
+            run_files.items,
+        );
     }
 
     Ok(run_files)
 }
 
+// This struct holds an item (like a PTuple), and a file number we read
+// it from.  By keeping a heap of these sorted on the item, we can
+// merge the files using a priority queue.
+struct ObjAndFileIndex<T>
+where
+    T: Ord,
+{
+    obj: T,
+    i: usize,
+}
+impl<T> Ord for ObjAndFileIndex<T>
+where
+    T: Ord,
+{
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other.obj.cmp(&self.obj)
+    }
+}
+impl<T> PartialOrd for ObjAndFileIndex<T>
+where
+    T: Ord,
+{
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(other.obj.cmp(&self.obj))
+    }
+}
+impl<T> PartialEq for ObjAndFileIndex<T>
+where
+    T: Ord,
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.obj == other.obj
+    }
+}
+impl<T> Eq for ObjAndFileIndex<T> where T: Ord {}
+
 // Merge the sorted runs
-fn merge_runs<T: SerializeDeserialize + Ord + Clone>(
-    output_file: &str,
-    run_files: &RunFiles,
-    buffer_size: usize,
-    config: bincode::config::Configuration,
-) -> std::io::Result<()> {
+fn merge_runs<T, W>(output_writer: &mut W, run_files: &RunFiles) -> std::io::Result<()>
+where
+    T: Encode + Decode<()> + Ord + Clone + Send,
+    W: Write + Sized,
+{
     let mut files: Vec<BufReader<File>> = Vec::new();
     for f in &run_files.files {
         files.push(BufReader::new(File::open(f)?));
     }
+    let config = bincode::config::standard();
 
-    let mut heap: Vec<(T, usize)> = Vec::with_capacity(buffer_size);
-    // to fix error, iterate over indexes? Like below
+    println!("merge setup");
+    let mut heap: BinaryHeap<ObjAndFileIndex<T>> = BinaryHeap::with_capacity(files.len());
     for (i, file) in files.iter_mut().enumerate() {
-        let obj = match T::deserialize(file, config) {
-            Ok(obj) => obj,
-            Err(_) => continue,
-        };
-        heap.push((obj, i));
+        let obj = bincode::decode_from_std_read(file, config)
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
+        heap.push(ObjAndFileIndex { obj, i });
     }
 
-    let mut writer = BufWriter::new(File::create(output_file)?);
-
+    let mut bar = tqdm!(desc = "Merging", total = run_files.items as usize);
     while !heap.is_empty() {
-        // Sort the heap
-        heap.sort();
-
+        bar.update(1)?;
         // Write the smallest object to the output file
-        let (obj, file_index) = heap.pop().unwrap();
-        obj.serialize(&mut writer, config)?;
+        let oi = heap.pop().unwrap();
+        bincode::encode_into_std_write(oi.obj, output_writer, config)
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
+        output_writer.flush()?;
 
         // Read the next object from the file
-        let obj = match T::deserialize(&mut files[file_index], config) {
+        let obj = match bincode::decode_from_std_read(&mut files[oi.i], config) {
             Ok(obj) => obj,
             Err(_) => continue,
         };
-        heap.push((obj, file_index));
+        heap.push(ObjAndFileIndex { obj, i: oi.i });
     }
 
     Ok(())
@@ -180,18 +224,65 @@ fn merge_runs<T: SerializeDeserialize + Ord + Clone>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use bincode::{Decode, Encode};
+    use std::{
+        fs::File,
+        io::{BufReader, BufWriter, Read, Write},
+    };
+
+    use super::external_sort_from;
+    use bincode::{config::Configuration, Decode, Encode};
+    use rand::distr::{Alphanumeric, SampleString};
 
     #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Encode, Decode)]
     struct Integer {
-        value: i32,
+        value: u32,
+        another: i32,
+        label: String,
     }
 
     #[test]
     fn test_external_sort() -> std::io::Result<()> {
+        let ints = Vec::from_iter((0..10000).map(|_i| Integer {
+            value: rand::random::<u32>() + 1,
+            another: rand::random::<i32>() + 1,
+            label: Alphanumeric.sample_string(&mut rand::rng(), rand::random_range(10..15)),
+        }));
         let config = bincode::config::standard();
-        external_sort::<Integer>("input.bin", "output.bin", 1000, "temp", config)?;
+        let mut writer = BufWriter::new(File::create("input.bin")?);
+        for int in &ints {
+            bincode::encode_into_std_write(int, &mut writer, config)
+                .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
+        }
+        writer.flush()?;
+
+        println!("Unsorted ints");
+        let mut foo_reader = BufReader::new(File::open("input.bin")?);
+        while let Ok(foo) = bincode::decode_from_std_read::<Integer, _, _>(&mut foo_reader, config)
+        {
+            println!("{:?}", foo);
+        }
+
+        let mut reader = BufReader::new(File::open("input.bin")?);
+        let mut writer = BufWriter::new(File::create("output.bin")?);
+        external_sort_from::<Integer, _, _>(&mut reader, &mut writer, 1000, "temp")?;
+        writer.flush()?;
+
+        let mut reader = BufReader::new(File::open("output.bin")?);
+        let mut last_int = 0;
+        let mut i: u32 = 0;
+        println!("Decoding sorted ints");
+        while let Ok(int) = bincode::decode_from_std_read::<Integer, _, _>(&mut reader, config) {
+            println!("{:?}", int);
+            assert!(
+                int.value >= last_int,
+                "{} was not >= {}",
+                int.value,
+                last_int
+            );
+            last_int = int.value;
+            i += 1;
+        }
+        assert_eq!(i, 10000);
         Ok(())
     }
 }

@@ -107,7 +107,7 @@ fn train_qrels(
     let bincode_config = bincode::config::standard();
 
     debug!("Loading dictionary");
-    let dict = Dict::load(&dict_file)?;
+    let dict = Dict::load(&dict_file);
     debug!(
         "dict sizes are {} {} {}",
         dict.m.len(),
@@ -155,7 +155,7 @@ fn train_qrels(
                 feats
                     .seek(SeekFrom::Start(di.offset))
                     .expect("Seek error in feats");
-                let mut fv =
+                let mut fv: FeatureVec =
                     FeatureVec::read_from(&mut feats).expect("Error reading feature vector");
                 if fv.squared_norm == 0.0 {
                     fv.compute_norm();

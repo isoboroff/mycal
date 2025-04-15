@@ -5,7 +5,7 @@ use ordered_float::OrderedFloat;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Write};
+use std::io::{BufRead, BufReader, BufWriter, Write};
 
 pub mod classifier;
 pub use classifier::Classifier;
@@ -15,7 +15,10 @@ pub mod compress;
 pub mod extsort;
 pub mod index;
 pub mod utils;
-pub use extsort::{external_sort, SerializeDeserialize};
+pub use extsort::external_sort;
+pub mod store;
+pub use store::Store;
+pub mod odch;
 
 // DocInfos help us find the document features in the feature vec file
 #[derive(Debug, Encode, Decode, Clone, Eq, PartialEq, Ord, PartialOrd)]
@@ -333,12 +336,11 @@ impl FeatureVec {
             squared_norm: 0.0,
         }
     }
-    pub fn read_from(fp: &mut BufReader<File>) -> Result<FeatureVec, DecodeError> {
+    pub fn read_from<R: BufRead + Sized>(fp: &mut R) -> Result<FeatureVec, DecodeError> {
         bincode::decode_from_std_read(fp, bincode::config::standard())
     }
-    pub fn write_to(&self, mut fp: BufWriter<File>) -> Result<(), EncodeError> {
-        let _ = bincode::encode_into_std_write(self, &mut fp, bincode::config::standard());
-        Ok(())
+    pub fn write_to<W: Write>(&self, fp: &mut W) -> Result<usize, EncodeError> {
+        bincode::encode_into_std_write(self, fp, bincode::config::standard())
     }
     pub fn num_features(&self) -> usize {
         self.features.len()
