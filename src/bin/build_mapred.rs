@@ -1,134 +1,158 @@
-use bincode::{Decode, Encode};
-use bytesize::{GB, MB};
+use bytesize::GB;
 use clap::Parser;
 use kdam::{tqdm, BarExt};
 use log::{log_enabled, Level};
 use mycal::{
-    external_sort,
-    extsort::SerializeDeserialize,
-    index::InvertedFile,
-    tok::{get_tokenizer, tokenize_and_map},
-    utils, Dict, DocInfo, DocsDb, FeatureVec,
+    extsort::external_sort_from, index::InvertedFile, odch::OnDiskCompressedHash, ptuple::PTuple,
+    tok::get_tokenizer, utils, FeatureVec,
 };
 use serde_json::{from_str, Map, Value};
 use std::{
+    collections::HashMap,
     fs::File,
-    io::{BufRead, BufReader, BufWriter, Seek, Write},
-    iter,
-    path::Path,
+    io::{BufRead, BufReader, BufWriter, Write},
 };
 
-#[derive(Clone, Encode, Decode, PartialEq, Eq, Ord, PartialOrd)]
-struct PTuple {
-    tok: usize,
-    docid: u32,
-    count: u32,
-}
-
-fn build_index(args: Cli) -> Result<(), std::io::Error> {
-    let mut dict = Dict::new();
-    let mut docsdb = DocsDb::create(&args.out_prefix);
-    let invfile_fname = format!("{}.inv", &args.out_prefix);
-    let mut invfile = InvertedFile::new(Path::new(&invfile_fname));
-    let featfile_fname = format!("{}.ftr", &args.out_prefix);
-    let mut featfile = BufWriter::new(File::create(&featfile_fname)?);
-    let bincode_config = bincode::config::standard();
-
-    println!("First pass: tokenizing, indexing, storing features");
+fn build_index(args: Cli) -> Result<(), Box<dyn std::error::Error>> {
+    let bincode_conf = bincode::config::standard();
+    let tokenizer = get_tokenizer(args.tokenizer.as_ref().expect("Unknown tokenizer"));
+    let config = bincode::config::standard();
+    let mut token_tokid_map = OnDiskCompressedHash::new();
+    let mut docid_intid_map = OnDiskCompressedHash::new();
+    let mut tuples_out = BufWriter::new(File::create(&format!("{}/tuples", args.out_prefix))?);
+    let mut num_tuples: u32 = 0;
     let mut num_docs: u32 = 0;
-    let mut postings_out = BufWriter::new(File::create(format!("{}.tmp", args.out_prefix))?);
-    let mut postcount: u32 = 0;
-    let mut bar;
 
+    // Step 1:
+    // Parse documents into a sequence of (token, docid, count) tuples.
+    // tokens are internal token ids.
+    // docids are u128 versions of UUIDs.
+
+    println!("Tokenizing bundles");
     for bundle in args.bundles {
-        let tokenizer = get_tokenizer(args.tokenizer.as_ref().expect("Unknown tokenizer"));
-        let mut reader = utils::reader(&bundle);
+        let num_lines = utils::reader(&bundle).lines().count();
+        let fp = utils::reader(&bundle);
+        let mut bar = tqdm!(desc = &bundle, total = num_lines);
 
-        let num_lines = reader.lines().count();
-        bar = tqdm!(total = num_lines);
-        reader = utils::reader(&bundle);
-
-        println!("Tokenizing, saving feature vectors and docinfos");
-        for line in reader.lines() {
+        for line in fp.lines() {
+            let line = line?;
             bar.update(1)?;
             num_docs += 1;
-            let docmap = from_str::<Map<String, Value>>(&line.unwrap()).unwrap();
-            let (docid, docmap) =
-                tokenize_and_map(docmap, &tokenizer, &mut dict, &args.docid, &args.body);
-            let mut fv = FeatureVec::new(docid.clone());
-            for (tok, count) in docmap {
-                let pt = PTuple {
-                    tok: tok,
-                    docid: num_docs,
-                    count: count,
-                };
-                pt.serialize(&mut postings_out, bincode_config)
-                    .expect("Error writing postings");
-                fv.push(tok, count as f32);
-                postcount += 1;
+            let doc: Map<String, Value> = from_str(&line)?;
+            let docid = doc.get(&args.docid).unwrap().as_str().unwrap();
+            let intid = docid_intid_map.get_or_insert(&docid);
+            let text = doc.get(&args.body).unwrap().as_str().unwrap();
+            let mut token_map: HashMap<String, u32> = HashMap::new();
+
+            for t in tokenizer.tokenize(text) {
+                let v = token_map.entry(t).or_insert(0);
+                *v = *v + 1;
             }
-            let offset = featfile.stream_position().unwrap();
-            bincode::encode_into_std_write(fv, &mut featfile, bincode_config)
-                .expect("Error writing feature vec");
-            let di = DocInfo {
-                intid: num_docs,
-                docid: docid.clone(),
-                offset,
-            };
-            docsdb.insert_batch(&docid, &di, 100_000);
+            for (t, count) in token_map {
+                let tokid = token_tokid_map.get_or_insert(&t);
+                let pt = PTuple::new(tokid, intid, count);
+                bincode::encode_into_std_write(pt, &mut tuples_out, bincode_conf)?;
+                num_tuples += 1;
+            }
         }
     }
 
-    docsdb.process_remaining();
-    let _ = docsdb.ext2int.flush();
-    postings_out.flush().unwrap();
-    std::mem::drop(postings_out);
+    println!("{} token tuples", num_tuples);
+    println!("Saving vocab");
+    tuples_out.flush()?;
+    // std::mem::drop(tuples_out);
+    token_tokid_map.save(&format!("{}/vocab", args.out_prefix))?;
+    docid_intid_map.save(&format!("{}/docid_map", args.out_prefix))?;
 
-    println!("Sorting postings");
-    let post_in = format!("{}.tmp", args.out_prefix);
-    let post_out = format!("{}.pst", args.out_prefix);
-    external_sort::<PTuple>(&post_in, &post_out, 10_000_000, "./tmp", bincode_config)?;
+    // Step 2
+    // Sort the tuples, so now they are in token-id order
 
-    println!("Adding postings");
-    bar = tqdm!(total = postcount as usize);
-    let mut last_tok = 0;
-    let mut postings = BufReader::new(File::open(post_out)?);
-    for p in iter::from_fn(move || PTuple::deserialize(&mut postings, bincode_config).ok()) {
+    println!("Sorting tuples");
+    let tuples_in = format!("{}/tuples", args.out_prefix);
+    let mut tuples_in_fp = BufReader::new(File::open(&tuples_in)?);
+    let tuples_out = format!("{}/tuples_sorted", args.out_prefix);
+    let mut tuples_out_fp = BufWriter::new(File::create(&tuples_out)?);
+
+    external_sort_from::<PTuple, _, _>(&mut tuples_in_fp, &mut tuples_out_fp, 10_000_000, "tmp")?;
+    tuples_out_fp.flush()?;
+
+    // Step 3
+    // build inverted file
+
+    let mut sorted_tuples = BufReader::new(File::open(&tuples_out)?);
+    let mut inverted_file = InvertedFile::new(&format!("{}/inverted_file", args.out_prefix));
+    let mut pt: PTuple = bincode::decode_from_std_read(&mut sorted_tuples, config)?;
+    let mut bar = tqdm!(desc = "Building inverted file", total = num_tuples as usize);
+    let mut current_intid = pt.docid;
+    let mut tuple_count: u32 = 1;
+    loop {
         bar.update(1)?;
-        // Check if we should dump, but only after we have the complete posting list for a token.
-        if p.tok != last_tok {
-            last_tok = p.tok;
-            if invfile.memusage() > 100 * MB as u32 {
-                let _ = invfile.save()?;
+        if pt.docid != current_intid {
+            current_intid = pt.docid;
+            // To do: check cache size and save out invfile if needed
+            if inverted_file.memusage() > (100 * GB) as u32 {
+                inverted_file.save()?;
             }
         }
-        invfile.add_posting(p.tok, p.docid, p.count);
+        inverted_file.add_posting(pt.tok, current_intid as u32, pt.count);
+        pt = match bincode::decode_from_std_read(&mut sorted_tuples, config) {
+            Ok(pt) => pt,
+            Err(_e) => break,
+        };
+        tuple_count += 1;
     }
 
-    if invfile.memusage() > 0 {
-        let _ = invfile.save()?;
-    }
+    assert_eq!(
+        tuple_count, num_tuples,
+        "Tuple count mismatch, {} parsed, {} inverted",
+        num_tuples, tuple_count
+    );
+    println!("Saving invfile");
+    inverted_file.save()?;
 
-    std::fs::remove_file(post_in)?;
+    // Step 4
+    // build feature vector file
 
-    println!("Precompute IDF");
-    let mut new_dict = Dict::new();
-    let mut last_tokid = 0;
-    bar = tqdm!(total = dict.m.len());
-    dict.m.drain().for_each(|(tok, tokid)| {
-        let _ = bar.update(1);
-        if let Some(df) = dict.df.get(&tokid) {
-            new_dict.m.insert(tok, tokid);
-            if tokid > last_tokid {
-                last_tokid = tokid;
-            }
-            new_dict.df.insert(tokid, (num_docs as f32 / df).log10());
+    let mut tuples = BufReader::new(File::open(&tuples_in)?);
+    let mut featfile = BufWriter::new(File::create(&format!(
+        "{}/feature_vectors",
+        args.out_prefix
+    ))?);
+    let mut pt: PTuple = bincode::decode_from_std_read(&mut tuples, config)?;
+    let mut current_intid = pt.docid;
+    let mut current_docid = docid_intid_map.get_key_for(current_intid).unwrap();
+    let mut fv = FeatureVec::new(current_docid.clone());
+    let mut df: HashMap<u32, f32> = HashMap::new();
+    bar = tqdm!(desc = "Storing feature vectors", total = num_docs as usize);
+    loop {
+        if pt.docid != current_intid {
+            fv.compute_norm();
+            fv.write_to(&mut featfile)?;
+            let idf = (num_docs as f32 / fv.num_features() as f32).log10();
+            df.insert(current_intid as u32, idf);
+            bar.update(1)?;
+            current_intid = pt.docid;
+            current_docid = match docid_intid_map.get_key_for(current_intid) {
+                Some(docid) => docid,
+                None => panic!("Missing docid for intid {}", current_intid),
+            };
+            fv = FeatureVec::new(current_docid.clone());
         }
-    });
-    new_dict.last_tokid = last_tokid;
-    new_dict
-        .save(&format!("{}.dct", &args.out_prefix))
-        .expect("Problem writing dict");
+        fv.push(pt.tok, pt.count as f32);
+        pt = match bincode::decode_from_std_read(&mut tuples, config) {
+            Ok(pt) => pt,
+            Err(_) => break,
+        }
+    }
+    featfile.flush()?;
+
+    let mut df_file = BufWriter::new(File::create(format!("{}/idf", args.out_prefix))?);
+    bincode::encode_into_std_write(df, &mut df_file, bincode_conf)?;
+    df_file.flush()?;
+
+    std::fs::remove_file(format!("{}/tuples", args.out_prefix))?;
+    std::fs::remove_file(format!("{}/tuples_sorted", args.out_prefix))?;
+
     Ok(())
 }
 
@@ -147,10 +171,10 @@ struct Cli {
     #[arg(short = 't', default_value = "englishstemlower")]
     tokenizer: Option<String>,
 }
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Cli::parse();
     if log_enabled!(Level::Debug) {
         env_logger::init();
     }
-    build_index(args).expect("Problem building index");
+    build_index(args)
 }

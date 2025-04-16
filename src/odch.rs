@@ -60,7 +60,7 @@ impl OnDiskCompressedHash {
         if self.finalized {
             panic!("Cannot save a finalized OnDiskCompressedHash");
         }
-        self.idx.sort();
+        // Do not do this: self.idx.sort();
         let encoded = encode_to_vec(&self.idx, bincode::config::standard())?;
         let fp = File::create(filename).unwrap();
         let mut compressed = FrameEncoder::new(fp);
@@ -90,7 +90,7 @@ impl OnDiskCompressedHash {
         self.map.get(key).cloned()
     }
 
-    pub fn get_key_for(&self, idx: usize) -> Option<&String> {
-        self.idx.get(idx + 1)
+    pub fn get_key_for(&self, intid: usize) -> Option<&String> {
+        self.idx.get(intid - 1)
     }
 }

@@ -1,11 +1,12 @@
 use bincode::{Decode, Encode};
+use kdam::tqdm;
 use log::debug;
 use std::{
     collections::HashMap,
     fmt::Display,
     fs::{File, OpenOptions},
     io::{BufReader, BufWriter, Read, Seek, Write},
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 use crate::compress::{magic_bytes_required, vbyte_bytes_required, MagicEncodedBuffer};
@@ -51,6 +52,8 @@ impl PostingList {
         PostingList { postings: my_posts }
     }
     pub fn add_posting(&mut self, doc_id: u32, tf: u32) {
+        assert!(doc_id > 0, "doc_id {} tf {}", doc_id, tf);
+        assert!(tf > 0, "doc_id {} tf {}", doc_id, tf);
         let posting = Posting { doc_id, tf };
         self.postings.push(posting);
     }
@@ -61,7 +64,12 @@ impl PostingList {
 
         bytes += vbyte_bytes_required(self.postings.len() as u32);
         for p in &self.postings {
-            bytes += magic_bytes_required(p.doc_id - last_docid, p.tf);
+            let mut docgap = p.doc_id;
+            if last_docid > 0 {
+                docgap = p.doc_id - last_docid;
+            }
+            assert!(docgap != 0, "p {:?} last_docid {}", p, last_docid);
+            bytes += magic_bytes_required(docgap, p.tf);
             last_docid = p.doc_id;
         }
         bytes
@@ -126,10 +134,10 @@ mod tests {
         env_logger::init();
         let mut pl = PostingList::new();
         let mut rng = rand::rng();
-        for _ in 0..100 {
-            let docid = rng.random_range(1..1000);
+        let docs = rand::seq::index::sample(&mut rng, 1000, 100);
+        for d in docs {
             let tf = rng.random_range(1..100);
-            pl.add_posting(docid, tf);
+            pl.add_posting(d as u32, tf);
         }
         let bytes_needed = pl.bytes_to_serialize();
         let mut buf: MagicEncodedBuffer = MagicEncodedBuffer::new_with_capacity(bytes_needed);
@@ -152,7 +160,7 @@ pub struct PostInfo {
 }
 
 pub struct InvertedFile {
-    inv_filename: PathBuf,
+    inv_filename: String,
     offsets: HashMap<usize, PostInfo>,
     cache: HashMap<usize, PostingList>,
     bincode_config: bincode::config::Configuration,
@@ -167,16 +175,16 @@ impl InvertedFile {
         let offsets: HashMap<usize, PostInfo> =
             bincode::decode_from_std_read(&mut offreader, config).unwrap();
         Ok(InvertedFile {
-            inv_filename: Path::new(path).with_extension("inv"),
+            inv_filename: path.to_string(),
             offsets: offsets,
             cache: HashMap::new(),
             bincode_config: config,
             cache_count: 0,
         })
     }
-    pub fn new(path: &Path) -> InvertedFile {
+    pub fn new(path: &str) -> InvertedFile {
         InvertedFile {
-            inv_filename: Path::new(path).with_extension("inv"),
+            inv_filename: path.to_string(),
             offsets: HashMap::new(),
             cache: HashMap::new(),
             bincode_config: bincode::config::standard(),
@@ -224,7 +232,7 @@ impl InvertedFile {
             .open(&self.inv_filename)?;
         let mut invfile: BufWriter<File> = BufWriter::new(file);
 
-        for (tokid, pl) in &mut self.cache {
+        for (tokid, pl) in tqdm!((&mut self.cache).into_iter(), desc = "posting lists") {
             let offset = invfile.stream_position()?;
             let bytes = pl.bytes_to_serialize();
             self.offsets.insert(*tokid, PostInfo { offset, len: bytes });
@@ -232,17 +240,21 @@ impl InvertedFile {
             pl.serialize_into(&mut buf);
             invfile.write_all(buf.as_slice())?;
         }
+        invfile.flush()?;
         self.cache = HashMap::new();
         self.cache_count = 0;
 
+        let offfpath = Path::new(&self.inv_filename).with_extension("off");
+        println!("Saving offsets to {:?}", offfpath);
         let offfile = OpenOptions::new()
             .write(true)
             .truncate(true)
-            .open(self.inv_filename.with_extension("off"))?;
+            .create(true)
+            .open(offfpath)?;
         let mut offwriter = BufWriter::new(offfile);
         match bincode::encode_into_std_write(&self.offsets, &mut offwriter, self.bincode_config) {
             Err(e) => Err(std::io::Error::new(std::io::ErrorKind::Other, e)),
-            Ok(_bytes) => Ok(()),
+            Ok(_bytes) => offwriter.flush(),
         }
     }
 }

@@ -1,7 +1,10 @@
 // ported from Joel McKenzie's immediate_access project
 // https://github.com/JMMackenzie/immediate-access/blob/main/compress.hpp
 
-use std::collections::VecDeque;
+use std::{
+    collections::VecDeque,
+    io::{Read, Write},
+};
 
 const MAGIC_F: u32 = 4;
 
@@ -95,6 +98,20 @@ impl VbyteEncodedBuffer {
         }
         Result::Ok(value)
     }
+    pub fn read_from<R: Read>(buf: &mut R) -> Result<u32, std::io::Error> {
+        let mut value: u32 = 0u32;
+        let mut shift: usize = 0;
+        for byte in buf.bytes() {
+            let byte = byte.unwrap();
+            value |= ((byte & 0x7f) as u32) << shift;
+            if byte & 0x80 == 0 {
+                break;
+            }
+            shift += 7;
+        }
+        Result::Ok(value)
+    }
+
     pub fn write(&mut self, value: u32) -> usize {
         let mut write_byte = (value & 0x7f) as u8;
         let mut value = value >> 7;
@@ -214,6 +231,9 @@ impl MagicEncodedBuffer {
     pub fn vbyte_read(&mut self) -> Result<u32, &str> {
         self.buffer.read()
     }
+    pub fn vbyte_read_from<R: Read>(buf: &mut R) -> Result<u32, std::io::Error> {
+        VbyteEncodedBuffer::read_from(buf)
+    }
     pub fn read(&mut self) -> (u32, u32) {
         let decoded = match self.buffer.read() {
             Ok(value) => value,
@@ -235,8 +255,31 @@ impl MagicEncodedBuffer {
         self.last_docid += gap;
         (self.last_docid, freq)
     }
+    pub fn read_from<R: Read>(buf: &mut R) -> (u32, u32) {
+        let decoded = match VbyteEncodedBuffer::read_from(buf) {
+            Ok(value) => value,
+            Err(e) => panic!("Error reading from buffer: {}", e),
+        };
+        let first: u32;
+        let mut second: u32;
+        if decoded % MAGIC_F > 0 {
+            first = 1 + decoded / MAGIC_F;
+            second = decoded % MAGIC_F;
+        } else {
+            first = decoded / MAGIC_F;
+            second = match VbyteEncodedBuffer::read_from(buf) {
+                Ok(value) => value,
+                Err(e) => panic!("Error reading from buffer: {}", e),
+            };
+            second = MAGIC_F + second - 1;
+        }
+        (first, second)
+    }
     pub fn vbyte_write(&mut self, value: u32) -> usize {
         self.buffer.write(value)
+    }
+    pub fn vbyte_write_into<W: Write>(buf: &mut W, value: u32) {
+        buf.write(&value.to_be_bytes()).unwrap();
     }
     pub fn write(&mut self, docid: u32, freq: u32) -> usize {
         let mut magic_value;
@@ -253,6 +296,26 @@ impl MagicEncodedBuffer {
             bytes_written += self.buffer.write(magic_value);
         }
         bytes_written
+    }
+    pub fn write_into<W: Write>(
+        buf: &mut W,
+        last_docid_for_gap: u32,
+        docid: u32,
+        freq: u32,
+    ) -> Result<usize, std::io::Error> {
+        let mut magic_value;
+        let docgap = docid - last_docid_for_gap;
+        let mut bytes_written = 0;
+        if freq < MAGIC_F {
+            magic_value = (docgap - 1) * MAGIC_F + freq;
+            bytes_written += buf.write(&magic_value.to_be_bytes())?;
+        } else {
+            magic_value = docgap * MAGIC_F;
+            bytes_written += buf.write(&magic_value.to_be_bytes())?;
+            magic_value = freq - MAGIC_F + 1;
+            bytes_written += buf.write(&magic_value.to_be_bytes())?;
+        }
+        Ok(bytes_written)
     }
 }
 
