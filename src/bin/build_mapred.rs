@@ -1,3 +1,4 @@
+use bytesize::GB;
 use clap::Parser;
 use kdam::{tqdm, BarExt};
 use log::{log_enabled, Level};
@@ -80,18 +81,18 @@ fn build_index(args: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
     let mut sorted_tuples = BufReader::new(File::open(&tuples_out)?);
     let mut inverted_file = InvertedFile::new(&format!("{}/inverted_file", args.out_prefix));
-    let mut docid_intid_map = OnDiskCompressedHash::new();
     let mut pt: PTuple = bincode::decode_from_std_read(&mut sorted_tuples, config)?;
     let mut bar = tqdm!(desc = "Building inverted file", total = num_tuples as usize);
     let mut current_intid = pt.docid;
-    let mut current_docid = docid_intid_map.get_key_for(current_intid).unwrap();
     let mut tuple_count: u32 = 1;
     loop {
         bar.update(1)?;
         if pt.docid != current_intid {
             current_intid = pt.docid;
-            current_docid = docid_intid_map.get_key_for(current_intid).unwrap();
             // To do: check cache size and save out invfile if needed
+            if inverted_file.memusage() > (100 * GB) as u32 {
+                inverted_file.save()?;
+            }
         }
         inverted_file.add_posting(pt.tok, current_intid as u32, pt.count);
         pt = match bincode::decode_from_std_read(&mut sorted_tuples, config) {
@@ -131,7 +132,10 @@ fn build_index(args: Cli) -> Result<(), Box<dyn std::error::Error>> {
             df.insert(current_intid as u32, idf);
             bar.update(1)?;
             current_intid = pt.docid;
-            current_docid = docid_intid_map.get_key_for(current_intid).unwrap();
+            current_docid = match docid_intid_map.get_key_for(current_intid) {
+                Some(docid) => docid,
+                None => panic!("Missing docid for intid {}", current_intid),
+            };
             fv = FeatureVec::new(current_docid.clone());
         }
         fv.push(pt.tok, pt.count as f32);
