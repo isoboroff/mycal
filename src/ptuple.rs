@@ -1,5 +1,4 @@
 use bincode::{Decode, Encode};
-use uuid::Uuid;
 
 // Right now this is written specifically for NeuCLIR/RAGTIME
 // where docids are UUIDs.
