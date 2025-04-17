@@ -1,10 +1,7 @@
 use bincode::encode_into_std_write;
 use clap::Parser;
 use mycal::odch::OnDiskCompressedHash;
-use std::{
-    fs::File,
-    io::{BufReader, BufWriter},
-};
+use std::{fs::File, io::BufWriter};
 
 #[derive(Parser)]
 struct Cli {
