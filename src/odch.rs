@@ -93,4 +93,20 @@ impl OnDiskCompressedHash {
     pub fn get_key_for(&self, intid: usize) -> Option<&String> {
         self.idx.get(intid - 1)
     }
+
+    pub fn get_keys(&self) -> Vec<String> {
+        self.idx.clone()
+    }
+
+    pub fn get_values(&self) -> Vec<usize> {
+        self.map.values().cloned().collect()
+    }
+
+    pub fn len(&self) -> usize {
+        self.idx.len()
+    }
+
+    pub fn map(&self) -> &HashMap<String, usize> {
+        &self.map
+    }
 }

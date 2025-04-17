@@ -4,13 +4,13 @@ use kdam::{tqdm, BarExt};
 use log::{log_enabled, Level};
 use mycal::{
     extsort::external_sort_from, index::InvertedFile, odch::OnDiskCompressedHash, ptuple::PTuple,
-    tok::get_tokenizer, utils, FeatureVec,
+    store::Config, tok::get_tokenizer, utils, FeatureVec,
 };
 use serde_json::{from_str, Map, Value};
 use std::{
     collections::HashMap,
     fs::File,
-    io::{BufRead, BufReader, BufWriter, Write},
+    io::{BufRead, BufReader, BufWriter, Seek, Write},
 };
 
 fn build_index(args: Cli) -> Result<(), Box<dyn std::error::Error>> {
@@ -91,7 +91,9 @@ fn build_index(args: Cli) -> Result<(), Box<dyn std::error::Error>> {
             current_intid = pt.docid;
             // To do: check cache size and save out invfile if needed
             if inverted_file.memusage() > (100 * GB) as u32 {
+                bar.set_description("checkpointing invfile");
                 inverted_file.save()?;
+                bar.set_description("Building inverted file");
             }
         }
         inverted_file.add_posting(pt.tok, current_intid as u32, pt.count);
@@ -118,15 +120,17 @@ fn build_index(args: Cli) -> Result<(), Box<dyn std::error::Error>> {
         "{}/feature_vectors",
         args.out_prefix
     ))?);
+    let mut offsets: HashMap<usize, u64> = HashMap::new();
+    let mut bar = tqdm!(desc = "Building feature vectors", total = num_docs as usize);
     let mut pt: PTuple = bincode::decode_from_std_read(&mut tuples, config)?;
     let mut current_intid = pt.docid;
     let mut current_docid = docid_intid_map.get_key_for(current_intid).unwrap();
     let mut fv = FeatureVec::new(current_docid.clone());
     let mut df: HashMap<u32, f32> = HashMap::new();
-    bar = tqdm!(desc = "Storing feature vectors", total = num_docs as usize);
     loop {
         if pt.docid != current_intid {
             fv.compute_norm();
+            offsets.insert(current_intid, featfile.stream_position()?);
             fv.write_to(&mut featfile)?;
             let idf = (num_docs as f32 / fv.num_features() as f32).log10();
             df.insert(current_intid as u32, idf);
@@ -136,6 +140,7 @@ fn build_index(args: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 Some(docid) => docid,
                 None => panic!("Missing docid for intid {}", current_intid),
             };
+            bar.update(1)?;
             fv = FeatureVec::new(current_docid.clone());
         }
         fv.push(pt.tok, pt.count as f32);
@@ -144,14 +149,31 @@ fn build_index(args: Cli) -> Result<(), Box<dyn std::error::Error>> {
             Err(_) => break,
         }
     }
+    fv.compute_norm();
+    offsets.insert(current_intid, featfile.stream_position()?);
+    fv.write_to(&mut featfile)?;
+    let idf = (num_docs as f32 / fv.num_features() as f32).log10();
+    df.insert(current_intid as u32, idf);
+    bar.update(1)?;
     featfile.flush()?;
 
     let mut df_file = BufWriter::new(File::create(format!("{}/idf", args.out_prefix))?);
     bincode::encode_into_std_write(df, &mut df_file, bincode_conf)?;
     df_file.flush()?;
 
+    let mut off_file = BufWriter::new(File::create(format!("{}/fv_offsets", args.out_prefix))?);
+    bincode::encode_into_std_write(offsets, &mut off_file, bincode_conf)?;
+    off_file.flush()?;
+
     std::fs::remove_file(format!("{}/tuples", args.out_prefix))?;
     std::fs::remove_file(format!("{}/tuples_sorted", args.out_prefix))?;
+
+    let config = Config {
+        num_docs: docid_intid_map.len(),
+        num_features: token_tokid_map.len(),
+    };
+    let mut conf_file = File::create(format!("{}/config.toml", args.out_prefix))?;
+    conf_file.write_all(toml::to_string(&config).unwrap().as_ref())?;
 
     Ok(())
 }

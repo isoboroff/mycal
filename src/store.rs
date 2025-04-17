@@ -1,9 +1,18 @@
-use bincode::{decode_from_std_read, encode_into_std_write};
+use bincode::decode_from_std_read;
+use serde::{Deserialize, Serialize};
 
 use crate::index::InvertedFile;
 use crate::odch::OnDiskCompressedHash;
 use crate::FeatureVec;
+use std::collections::HashMap;
 use std::fs::File;
+use std::io::{BufReader, Read, Seek};
+
+#[derive(Serialize, Deserialize)]
+pub struct Config {
+    pub num_docs: usize,
+    pub num_features: usize,
+}
 
 pub struct Store {
     pub path: String,
@@ -11,8 +20,9 @@ pub struct Store {
     pub invfile: Option<InvertedFile>,
     pub vocab: Option<OnDiskCompressedHash>,
     pub docids: Option<OnDiskCompressedHash>,
-    pub fv_offsets: Option<Vec<u64>>,
+    pub fv_offsets: Option<HashMap<usize, u64>>,
     pub idf_values: Option<Vec<f32>>,
+    pub config: Config,
 }
 
 impl Store {
@@ -21,11 +31,15 @@ impl Store {
         Ok(Store {
             path: path.to_string(),
             fvfile: Some(File::create(format!("{}/feature_vectors", path))?),
-            invfile: Some(InvertedFile::new(&format!("{}/invfile", path))),
+            invfile: Some(InvertedFile::new(&format!("{}/inverted_file", path))),
             vocab: Some(OnDiskCompressedHash::new()),
             docids: Some(OnDiskCompressedHash::new()),
-            fv_offsets: Some(Vec::new()),
+            fv_offsets: Some(HashMap::new()),
             idf_values: Some(Vec::new()),
+            config: Config {
+                num_docs: 0,
+                num_features: 0,
+            },
         })
     }
 
@@ -36,6 +50,18 @@ impl Store {
                 "Could not find path",
             ));
         }
+        let config: Config = match File::open(format!("{}/config.toml", path)) {
+            Ok(fp) => {
+                let mut buf = String::new();
+                BufReader::new(fp).read_to_string(&mut buf)?;
+                toml::from_str(&buf).unwrap()
+            }
+            Err(_) => Config {
+                num_docs: 0,
+                num_features: 0,
+            },
+        };
+
         Ok(Store {
             path: path.to_string(),
             fvfile: None,
@@ -44,15 +70,8 @@ impl Store {
             docids: None,
             fv_offsets: None,
             idf_values: None,
+            config: config,
         })
-    }
-
-    pub fn add_token(&mut self, token: &str) -> Result<usize, Box<dyn std::error::Error>> {
-        if self.vocab.is_none() {
-            self.vocab = Some(OnDiskCompressedHash::new());
-        }
-        let tokid = self.vocab.as_mut().unwrap().get_or_insert(token);
-        Ok(tokid)
     }
 
     pub fn get_tokid(&mut self, token: &str) -> Result<usize, Box<dyn std::error::Error>> {
@@ -68,12 +87,28 @@ impl Store {
         Ok(tokid)
     }
 
-    pub fn add_docid(&mut self, docid: &str) -> Result<usize, Box<dyn std::error::Error>> {
-        if self.docids.is_none() {
-            self.docids = Some(OnDiskCompressedHash::new());
+    pub fn num_features(&mut self) -> Result<usize, Box<dyn std::error::Error>> {
+        if self.config.num_features == 0 {
+            if self.vocab.is_none() {
+                match self.load_vocab() {
+                    Ok(_) => self.config.num_features = self.vocab.as_ref().unwrap().len(),
+                    Err(e) => return Err(e),
+                }
+            }
         }
-        let intid = self.docids.as_mut().unwrap().get_or_insert(docid);
-        Ok(intid)
+        Ok(self.config.num_features)
+    }
+
+    pub fn num_docs(&mut self) -> Result<usize, Box<dyn std::error::Error>> {
+        if self.config.num_docs == 0 {
+            if self.docids.is_none() {
+                match self.load_docinfo() {
+                    Ok(_) => self.config.num_docs = self.docids.as_ref().unwrap().len(),
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+        Ok(self.config.num_docs)
     }
 
     pub fn get_doc_intid(&mut self, docid: &str) -> Result<usize, Box<dyn std::error::Error>> {
@@ -102,29 +137,35 @@ impl Store {
         Ok(docid.clone())
     }
 
-    pub fn add_fv_offset(&mut self, offset: u64) -> Result<(), Box<dyn std::error::Error>> {
-        if self.fv_offsets.is_none() {
-            self.fv_offsets = Some(Vec::new());
+    pub fn get_intids(&mut self) -> Result<Vec<usize>, Box<dyn std::error::Error>> {
+        if self.docids.is_none() {
+            self.load_docinfo()?;
         }
-        self.fv_offsets.as_mut().unwrap().push(offset);
-        Ok(())
+        Ok(self.docids.as_ref().unwrap().get_values())
     }
 
-    pub fn save_fv(&mut self, fv: FeatureVec) -> Result<(), Box<dyn std::error::Error>> {
-        encode_into_std_write(
-            fv,
-            self.fvfile.as_mut().unwrap(),
-            bincode::config::standard(),
-        )?;
-        Ok(())
+    pub fn get_fv(&mut self, intid: usize) -> Result<FeatureVec, Box<dyn std::error::Error>> {
+        if self.fv_offsets.is_none() {
+            self.load_fv_offsets()?;
+        }
+        if self.fvfile.is_none() {
+            self.fvfile = Some(File::open(format!("{}/feature_vectors", self.path))?);
+        }
+        let offset = self.fv_offsets.as_ref().unwrap().get(&intid).unwrap();
+        let mut fv_reader = BufReader::new(self.fvfile.as_mut().unwrap());
+        fv_reader.seek(std::io::SeekFrom::Start(*offset))?;
+        let fv = FeatureVec::read_from(&mut fv_reader)?;
+        Ok(fv)
     }
 
     fn load_vocab(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         if self.vocab.is_some() {
             return Ok(());
         }
+        let now = std::time::Instant::now();
         let vocab_path = format!("{}/vocab", self.path);
         let vocab = OnDiskCompressedHash::open(&vocab_path)?;
+        println!("Loaded vocab in {:?}", now.elapsed());
         self.vocab = Some(vocab);
         Ok(())
     }
@@ -133,8 +174,10 @@ impl Store {
         if self.docids.is_some() {
             return Ok(());
         }
-        let docinfob_path = format!("{}/docinfo", self.path);
+        let now = std::time::Instant::now();
+        let docinfob_path = format!("{}/docid_map", self.path);
         let docinfo = OnDiskCompressedHash::open(&docinfob_path)?;
+        println!("Loaded docinfo in {:?}", now.elapsed());
         self.docids = Some(docinfo);
         Ok(())
     }
@@ -143,32 +186,14 @@ impl Store {
         if self.fv_offsets.is_some() {
             return Ok(());
         }
+        let now = std::time::Instant::now();
         let fv_offsets_path = format!("{}/fv_offsets", self.path);
         let mut fv_offsets_file = File::open(fv_offsets_path)?;
         self.fv_offsets = Some(decode_from_std_read(
             &mut fv_offsets_file,
             bincode::config::standard(),
         )?);
-        Ok(())
-    }
-
-    pub fn save(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        self.vocab
-            .as_mut()
-            .unwrap()
-            .save(&format!("{}/vocab", self.path))?;
-        self.docids
-            .as_mut()
-            .unwrap()
-            .save(&format!("{}/docinfo", self.path))?;
-        self.invfile.as_mut().unwrap().save()?;
-        let fv_offsets_path = format!("{}/fv_offsets", self.path);
-        let mut fv_offsets_file = File::create(fv_offsets_path)?;
-        encode_into_std_write(
-            self.fv_offsets.as_ref().unwrap(),
-            &mut fv_offsets_file,
-            bincode::config::standard(),
-        )?;
+        println!("Loaded fv_offsets in {:?}", now.elapsed());
         Ok(())
     }
 }

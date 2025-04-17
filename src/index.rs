@@ -232,7 +232,11 @@ impl InvertedFile {
             .open(&self.inv_filename)?;
         let mut invfile: BufWriter<File> = BufWriter::new(file);
 
-        for (tokid, pl) in tqdm!((&mut self.cache).into_iter(), desc = "posting lists") {
+        for (tokid, pl) in tqdm!(
+            (&mut self.cache).into_iter(),
+            desc = "posting lists",
+            position = 1
+        ) {
             let offset = invfile.stream_position()?;
             let bytes = pl.bytes_to_serialize();
             self.offsets.insert(*tokid, PostInfo { offset, len: bytes });

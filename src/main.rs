@@ -2,7 +2,7 @@ use clap::{Arg, ArgMatches, Command};
 use kdam::{tqdm, BarExt};
 use log::debug;
 use min_max_heap::MinMaxHeap;
-use mycal::{Classifier, Dict, DocInfo, DocScore, DocsDb, FeatureVec};
+use mycal::{Classifier, DocInfo, DocScore, DocsDb, FeatureVec, Store};
 use ordered_float::OrderedFloat;
 use rand::prelude::*;
 use std::collections::HashSet;
@@ -102,18 +102,8 @@ fn train_qrels(
     model_file: &str,
     qrels_args: &ArgMatches,
 ) -> Result<Classifier, std::io::Error> {
-    let dict_file = coll_prefix.to_string() + ".dct";
-    let feat_file = coll_prefix.to_string() + ".ftr";
+    let mut coll = Store::open(coll_prefix)?;
     let bincode_config = bincode::config::standard();
-
-    debug!("Loading dictionary");
-    let dict = Dict::load(&dict_file);
-    debug!(
-        "dict sizes are {} {} {}",
-        dict.m.len(),
-        dict.df.len(),
-        dict.last_tokid
-    );
 
     let model_path = Path::new(model_file);
     let mut model: Classifier;
@@ -121,17 +111,14 @@ fn train_qrels(
         debug!("Loading model from {}", model_file);
         model = Classifier::load(model_file, bincode_config).unwrap();
     } else {
-        debug!("Creating new model of dim {}", dict.m.len());
-        model = Classifier::new(dict.m.len(), 200000);
+        let num_toks = coll.num_features().unwrap();
+        debug!("Creating new model of dim {}", num_toks);
+        model = Classifier::new(num_toks, 200000);
     }
 
-    debug!("Opening DocsDb and feature file");
-    let docs = DocsDb::open(&coll_prefix);
-    let mut feats = BufReader::new(File::open(feat_file).expect("Could not open feature file"));
-
     let qrels_file = qrels_args.get_one::<String>("qrels_file").unwrap();
-
     let qrels = BufReader::new(File::open(qrels_file).expect("Could not open qrels file"));
+
     let mut pos = Vec::new();
     let mut neg = Vec::new();
     let mut using = HashSet::new();
@@ -149,27 +136,25 @@ fn train_qrels(
             line.split_whitespace().map(|x| x.to_string()).collect()
         })
         .for_each(|fields: Vec<String>| {
-            if let Some(dib) = docs.ext2int.get(&fields[2]).unwrap() {
+            if let Ok(intid) = coll.get_doc_intid(&fields[2]) {
                 using.insert(fields[2].clone());
-                let di: DocInfo = bincode::decode_from_slice(&dib, bincode_config).unwrap().0;
-                feats
-                    .seek(SeekFrom::Start(di.offset))
-                    .expect("Seek error in feats");
-                let mut fv: FeatureVec =
-                    FeatureVec::read_from(&mut feats).expect("Error reading feature vector");
-                if fv.squared_norm == 0.0 {
-                    fv.compute_norm();
-                }
-                let rel = i32::from_str(&fields[3]).unwrap();
-                let min = qrels_args.get_one::<i32>("level").unwrap();
+                if let Ok(mut fv) = coll.get_fv(intid) {
+                    if fv.squared_norm == 0.0 {
+                        fv.compute_norm();
+                    }
+                    let rel = i32::from_str(&fields[3]).unwrap();
+                    let min = qrels_args.get_one::<i32>("level").unwrap();
 
-                if rel < *min {
-                    neg.push(fv);
-                    println!("qrels-neg {} {}", fields[2], fields[3]);
+                    if rel < *min {
+                        neg.push(fv);
+                        println!("qrels-neg {} {}", fields[2], fields[3]);
+                    } else {
+                        pos.push(fv);
+                        println!("qrels-pos {} {}", fields[2], fields[3]);
+                    };
                 } else {
-                    pos.push(fv);
-                    println!("qrels-pos {} {}", fields[2], fields[3]);
-                };
+                    println!("Error reading fv for {}", fields[2]);
+                }
             } else {
                 println!("Document not found: {}", fields[2]);
             }
@@ -178,20 +163,13 @@ fn train_qrels(
     // If requested, add num_neg more negative examples to neg
     let num_neg = qrels_args.get_one::<usize>("negatives").unwrap();
     if *num_neg > 0 {
-        let docvec_file = coll_prefix.to_string() + ".dvc";
-        let mut docvec_fp = BufReader::new(File::open(docvec_file)?);
-        let docvec: Vec<DocInfo> =
-            bincode::decode_from_std_read(&mut docvec_fp, bincode_config).unwrap();
+        let docvec = coll.docids.as_ref().unwrap().get_values();
         let mut rng = rand::rng();
 
         docvec
             .choose_multiple(&mut rng, *num_neg)
-            .map(|di| di.offset)
-            .for_each(|offset: u64| {
-                feats
-                    .seek(SeekFrom::Start(offset))
-                    .expect("Seek error in feats");
-                let fv = FeatureVec::read_from(&mut feats).expect("Error reading feature vector");
+            .for_each(|intid| {
+                let fv = coll.get_fv(*intid).unwrap();
                 neg.push(fv);
             });
     }
