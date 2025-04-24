@@ -1,7 +1,7 @@
 use crate::FeatureVec;
-use bincode;
 use bincode::config::Configuration;
 use bincode::error::DecodeError;
+use bincode::{self, Decode, Encode};
 use rand::seq::IndexedRandom;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Write};
@@ -17,15 +17,56 @@ pub struct Classifier {
     config: bincode::config::Configuration,
 }
 
+#[derive(Encode, Decode)]
+pub struct SparseVector {
+    pub idx: Vec<usize>,
+    pub val: Vec<f32>,
+}
+
+impl SparseVector {
+    pub fn from_vec(v: &Vec<f32>) -> SparseVector {
+        let mut idx = Vec::new();
+        let mut val = Vec::new();
+        let mut count = 0;
+        v.iter()
+            .enumerate()
+            .filter(|(_i, &vv)| vv != 0.0)
+            .for_each(|(i, &vv)| {
+                idx.push(i);
+                val.push(vv);
+                count += 1;
+            });
+        idx.truncate(count);
+        val.truncate(count);
+        SparseVector { idx, val }
+    }
+    pub fn to_vec(sv: SparseVector) -> Vec<f32> {
+        let mut result = vec![
+            0.0;
+            *sv.idx
+                .iter()
+                .max()
+                .expect("Could not find maximum value in idx")
+                + 1
+        ];
+        sv.idx
+            .into_iter()
+            .zip(sv.val)
+            .for_each(|(i, v)| result[i] = v);
+        result
+    }
+}
+
 // The impls for Encode and Decode so we can serialize the Classifier
 impl bincode::Encode for Classifier {
     fn encode<E: bincode::enc::Encoder>(
         &self,
         encoder: &mut E,
     ) -> core::result::Result<(), bincode::error::EncodeError> {
+        let sv = SparseVector::from_vec(&self.w);
         bincode::Encode::encode(&self.lambda, encoder)?;
         bincode::Encode::encode(&self.num_iters, encoder)?;
-        bincode::Encode::encode(&self.w, encoder)?;
+        bincode::Encode::encode(&sv, encoder)?;
         bincode::Encode::encode(&self.scale, encoder)?;
         bincode::Encode::encode(&self.squared_norm, encoder)?;
         Ok(())
@@ -36,12 +77,17 @@ impl<Context> bincode::Decode<Context> for Classifier {
     fn decode<D: bincode::de::Decoder<Context = Context>>(
         decoder: &mut D,
     ) -> core::result::Result<Self, bincode::error::DecodeError> {
+        let lambda: f32 = bincode::Decode::decode(decoder)?;
+        let num_iters: u32 = bincode::Decode::decode(decoder)?;
+        let sv: SparseVector = bincode::Decode::decode(decoder)?;
+        let scale: f32 = bincode::Decode::decode(decoder)?;
+        let squared_norm: f32 = bincode::Decode::decode(decoder)?;
         Ok(Self {
-            lambda: bincode::Decode::decode(decoder)?,
-            num_iters: bincode::Decode::decode(decoder)?,
-            w: bincode::Decode::decode(decoder)?,
-            scale: bincode::Decode::decode(decoder)?,
-            squared_norm: bincode::Decode::decode(decoder)?,
+            lambda,
+            num_iters,
+            w: SparseVector::to_vec(sv),
+            scale,
+            squared_norm,
             config: bincode::config::standard(),
         })
     }
@@ -50,12 +96,17 @@ impl<'de, Context> bincode::BorrowDecode<'de, Context> for Classifier {
     fn borrow_decode<D: bincode::de::BorrowDecoder<'de, Context = Context>>(
         decoder: &mut D,
     ) -> core::result::Result<Self, bincode::error::DecodeError> {
+        let lambda: f32 = bincode::Decode::decode(decoder)?;
+        let num_iters: u32 = bincode::Decode::decode(decoder)?;
+        let sv: SparseVector = bincode::Decode::decode(decoder)?;
+        let scale: f32 = bincode::Decode::decode(decoder)?;
+        let squared_norm: f32 = bincode::Decode::decode(decoder)?;
         Ok(Self {
-            lambda: bincode::Decode::decode(decoder)?,
-            num_iters: bincode::Decode::decode(decoder)?,
-            w: bincode::Decode::decode(decoder)?,
-            scale: bincode::Decode::decode(decoder)?,
-            squared_norm: bincode::Decode::decode(decoder)?,
+            lambda,
+            num_iters,
+            w: SparseVector::to_vec(sv),
+            scale,
+            squared_norm,
             config: bincode::config::standard(),
         })
     }
