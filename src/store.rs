@@ -1,7 +1,7 @@
 use bincode::decode_from_std_read;
 use serde::{Deserialize, Serialize};
 
-use crate::index::InvertedFile;
+use crate::index::{InvertedFile, PostingList};
 use crate::odch::OnDiskCompressedHash;
 use crate::FeatureVec;
 use std::collections::HashMap;
@@ -144,6 +144,22 @@ impl Store {
         Ok(self.docids.as_ref().unwrap().get_values())
     }
 
+    pub fn get_posting_list(
+        &mut self,
+        tokid: usize,
+    ) -> Result<PostingList, Box<dyn std::error::Error>> {
+        if self.invfile.is_none() {
+            self.invfile = Some(InvertedFile::open(&format!("{}/inverted_file", self.path))?);
+        }
+        let pl = self
+            .invfile
+            .as_mut()
+            .unwrap()
+            .get_posting_list(tokid)
+            .map_err(|e| Box::new(e))?;
+        Ok(pl)
+    }
+
     pub fn get_fv(&mut self, intid: usize) -> Result<FeatureVec, Box<dyn std::error::Error>> {
         if self.fv_offsets.is_none() {
             self.load_fv_offsets()?;
@@ -162,10 +178,8 @@ impl Store {
         if self.vocab.is_some() {
             return Ok(());
         }
-        let now = std::time::Instant::now();
         let vocab_path = format!("{}/vocab", self.path);
         let vocab = OnDiskCompressedHash::open(&vocab_path)?;
-        println!("Loaded vocab in {:?}", now.elapsed());
         self.vocab = Some(vocab);
         Ok(())
     }
@@ -174,10 +188,8 @@ impl Store {
         if self.docids.is_some() {
             return Ok(());
         }
-        let now = std::time::Instant::now();
         let docinfob_path = format!("{}/docid_map", self.path);
         let docinfo = OnDiskCompressedHash::open(&docinfob_path)?;
-        println!("Loaded docinfo in {:?}", now.elapsed());
         self.docids = Some(docinfo);
         Ok(())
     }
@@ -186,14 +198,12 @@ impl Store {
         if self.fv_offsets.is_some() {
             return Ok(());
         }
-        let now = std::time::Instant::now();
         let fv_offsets_path = format!("{}/fv_offsets", self.path);
         let mut fv_offsets_file = File::open(fv_offsets_path)?;
         self.fv_offsets = Some(decode_from_std_read(
             &mut fv_offsets_file,
             bincode::config::standard(),
         )?);
-        println!("Loaded fv_offsets in {:?}", now.elapsed());
         Ok(())
     }
 }
