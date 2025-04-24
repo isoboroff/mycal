@@ -213,7 +213,7 @@ impl InvertedFile {
         } else {
             Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
-                "Can't get posting list",
+                format!("Can't get posting list for token {}", tokid),
             ))
         }
     }
