@@ -52,6 +52,7 @@ ap.add_argument('qrels',
 
 args = ap.parse_args()
 MYCAL = '/Users/soboroff/mycal-project/mycal/target/release/mycal'
+SCORE = '/Users/soboroff/mycal-project/mycal/target/release/score-index'
 
 class Lock:
     def __init__(self, filename):
@@ -142,8 +143,7 @@ def one_step(step):
             train[docid] = rel
         
     # Score collection
-    result = subprocess.run([ MYCAL, args.docdb, f'{args.topic}.model.{last_step}', 
-                             'score', 
+    result = subprocess.run([ SCORE, args.docdb, f'{args.topic}.model.{last_step}', 
                              '-n', str(args.num_docs), 
                              '-e', f'{args.topic}.train.{last_step}'], check=True, capture_output=True)
 
