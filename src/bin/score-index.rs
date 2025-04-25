@@ -2,8 +2,9 @@ use clap::Parser;
 use kdam::{tqdm, BarExt};
 use mycal::{Classifier, DocScore, FeaturePair, Store};
 use ordered_float::OrderedFloat;
-use std::collections::HashMap;
-use std::io::Result;
+use std::collections::{HashMap, HashSet};
+use std::fs::File;
+use std::io::{BufRead, BufReader, Result};
 
 #[derive(Parser)]
 struct Cli {
@@ -11,6 +12,8 @@ struct Cli {
     model_file: String,
     #[arg(short, long, default_value_t = 100)]
     num_results: usize,
+    #[arg(short, long)]
+    exclude: Option<String>,
 }
 
 struct Score {
@@ -23,6 +26,23 @@ fn main() -> Result<()> {
 
     let mut coll = Store::open(&args.coll_prefix)?;
     let bincode_config = bincode::config::standard();
+
+    let exclude_fn = args.exclude;
+
+    let mut exclude = HashSet::new();
+    match exclude_fn {
+        Some(efn) => {
+            let exclude_fp = BufReader::new(File::open(efn)?);
+            exclude_fp
+                .lines()
+                .map(|line| line.unwrap().split_whitespace().nth(2).unwrap().to_string())
+                .map(|d| (d.clone(), coll.get_doc_intid(&d).unwrap()))
+                .for_each(|(d, i)| {
+                    exclude.insert(i as u32);
+                });
+        }
+        _ => (),
+    }
 
     // Convert the model into a vector of FeaturePairs.
     // The weight vector is in tokid order.
@@ -51,6 +71,9 @@ fn main() -> Result<()> {
         bar.update(1)?;
         if let Ok(pl) = coll.get_posting_list(wt.id) {
             for p in pl.postings {
+                if exclude.contains(&p.doc_id) {
+                    continue;
+                }
                 let score = results.entry(p.doc_id).or_insert(0.0);
                 *score += wt.value * p.tf as f32;
             }
