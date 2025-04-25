@@ -36,8 +36,8 @@ fn main() -> Result<()> {
             exclude_fp
                 .lines()
                 .map(|line| line.unwrap().split_whitespace().nth(2).unwrap().to_string())
-                .map(|d| (d.clone(), coll.get_doc_intid(&d).unwrap()))
-                .for_each(|(d, i)| {
+                .map(|d| coll.get_doc_intid(&d).unwrap())
+                .for_each(|i| {
                     exclude.insert(i as u32);
                 });
         }
