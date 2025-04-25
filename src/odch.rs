@@ -38,7 +38,7 @@ impl OnDiskCompressedHash {
         let idx: Vec<String> =
             decode_from_std_read(&mut decompressed, bincode::config::standard())?;
         for (i, el) in idx.iter().enumerate() {
-            map.insert(el.clone(), i);
+            map.insert(el.clone(), i + 1);
         }
         Ok(OnDiskCompressedHash {
             map,
