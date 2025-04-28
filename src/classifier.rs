@@ -21,6 +21,7 @@ pub struct Classifier {
 pub struct SparseVector {
     pub idx: Vec<usize>,
     pub val: Vec<f32>,
+    pub length: usize,
 }
 
 impl SparseVector {
@@ -38,17 +39,14 @@ impl SparseVector {
             });
         idx.truncate(count);
         val.truncate(count);
-        SparseVector { idx, val }
+        SparseVector {
+            idx,
+            val,
+            length: v.len(),
+        }
     }
     pub fn to_vec(sv: SparseVector) -> Vec<f32> {
-        let mut result = vec![
-            0.0;
-            *sv.idx
-                .iter()
-                .max()
-                .expect("Could not find maximum value in idx")
-                + 1
-        ];
+        let mut result = vec![0.0; sv.length];
         sv.idx
             .into_iter()
             .zip(sv.val)
