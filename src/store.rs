@@ -14,9 +14,26 @@ pub struct Config {
     pub num_features: usize,
 }
 
+pub struct FeatureVecReader {
+    fp: BufReader<File>,
+}
+
+impl FeatureVecReader {
+    pub fn new(fp: BufReader<File>) -> Self {
+        FeatureVecReader { fp }
+    }
+}
+
+impl Iterator for FeatureVecReader {
+    type Item = FeatureVec;
+    fn next(&mut self) -> Option<FeatureVec> {
+        FeatureVec::read_from(&mut self.fp).ok()
+    }
+}
+
 pub struct Store {
     pub path: String,
-    pub fvfile: Option<File>,
+    pub fvfile: Option<BufReader<File>>,
     pub invfile: Option<InvertedFile>,
     pub vocab: Option<OnDiskCompressedHash>,
     pub docids: Option<OnDiskCompressedHash>,
@@ -26,23 +43,6 @@ pub struct Store {
 }
 
 impl Store {
-    pub fn new(path: &str) -> Result<Store, std::io::Error> {
-        std::fs::create_dir_all(path)?;
-        Ok(Store {
-            path: path.to_string(),
-            fvfile: Some(File::create(format!("{}/feature_vectors", path))?),
-            invfile: Some(InvertedFile::new(&format!("{}/inverted_file", path))),
-            vocab: Some(OnDiskCompressedHash::new()),
-            docids: Some(OnDiskCompressedHash::new()),
-            fv_offsets: Some(HashMap::new()),
-            idf_values: Some(Vec::new()),
-            config: Config {
-                num_docs: 0,
-                num_features: 0,
-            },
-        })
-    }
-
     pub fn open(path: &str) -> Result<Store, std::io::Error> {
         if !std::fs::exists(path)? {
             return Err(std::io::Error::new(
@@ -165,13 +165,27 @@ impl Store {
             self.load_fv_offsets()?;
         }
         if self.fvfile.is_none() {
-            self.fvfile = Some(File::open(format!("{}/feature_vectors", self.path))?);
+            self.fvfile = Some(BufReader::new(File::open(format!(
+                "{}/feature_vectors",
+                self.path
+            ))?));
         }
         let offset = self.fv_offsets.as_ref().unwrap().get(&intid).unwrap();
-        let mut fv_reader = BufReader::new(self.fvfile.as_mut().unwrap());
-        fv_reader.seek(std::io::SeekFrom::Start(*offset))?;
-        let fv = FeatureVec::read_from(&mut fv_reader)?;
+        self.fvfile
+            .as_mut()
+            .unwrap()
+            .seek(std::io::SeekFrom::Start(*offset))?;
+        let fv = FeatureVec::read_from(self.fvfile.as_mut().unwrap())?;
         Ok(fv)
+    }
+
+    pub fn get_fv_iter(&mut self) -> FeatureVecReader {
+        if self.fvfile.is_none() {
+            self.fvfile = Some(BufReader::new(
+                File::open(format!("{}/feature_vectors", self.path)).unwrap(),
+            ));
+        }
+        FeatureVecReader::new(self.fvfile.take().unwrap())
     }
 
     fn load_vocab(&mut self) -> Result<(), Box<dyn std::error::Error>> {
