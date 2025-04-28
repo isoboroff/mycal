@@ -153,15 +153,21 @@ pub enum Token {
     None,
 }
 
-#[derive(Encode, Decode)]
+#[derive(Encode, Decode, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PostInfo {
     offset: u64,
     len: usize,
 }
 
+impl PostInfo {
+    pub fn new(offset: u64, len: usize) -> Self {
+        PostInfo { offset, len }
+    }
+}
+
 pub struct InvertedFile {
     inv_filename: String,
-    offsets: HashMap<usize, PostInfo>,
+    offsets: Vec<PostInfo>,
     cache: HashMap<usize, PostingList>,
     bincode_config: bincode::config::Configuration,
     cache_count: u32,
@@ -172,8 +178,7 @@ impl InvertedFile {
         let offfile = File::open(Path::new(path).with_extension("off"))?;
         let mut offreader = BufReader::new(offfile);
         let config = bincode::config::standard();
-        let offsets: HashMap<usize, PostInfo> =
-            bincode::decode_from_std_read(&mut offreader, config).unwrap();
+        let offsets: Vec<PostInfo> = bincode::decode_from_std_read(&mut offreader, config).unwrap();
         Ok(InvertedFile {
             inv_filename: path.to_string(),
             offsets: offsets,
@@ -185,36 +190,34 @@ impl InvertedFile {
     pub fn new(path: &str) -> InvertedFile {
         InvertedFile {
             inv_filename: path.to_string(),
-            offsets: HashMap::new(),
+            offsets: Vec::new(),
             cache: HashMap::new(),
             bincode_config: bincode::config::standard(),
             cache_count: 0,
         }
     }
     pub fn add_posting(&mut self, tokid: usize, docid: u32, tf: u32) {
+        assert_ne!(0, tokid);
         assert_ne!(0, docid);
+        assert_ne!(0, tf);
         let pl = self.cache.entry(tokid).or_insert(PostingList::new());
         pl.add_posting(docid, tf);
     }
 
     pub fn get_posting_list(&mut self, tokid: usize) -> Result<PostingList, std::io::Error> {
+        assert_ne!(tokid, 0);
         if self.cache.contains_key(&tokid) {
             Ok(self.cache.get(&tokid).unwrap().clone())
-        } else if self.offsets.contains_key(&tokid) {
+        } else {
             let file = File::open(&self.inv_filename)?;
             let mut invfile = BufReader::new(file);
-            let pi = self.offsets.get(&tokid).unwrap();
+            let pi = &self.offsets[tokid];
             invfile.seek(std::io::SeekFrom::Start(pi.offset)).unwrap();
             let mut bytes = vec![0; pi.len].into_boxed_slice();
             invfile.read_exact(&mut bytes).unwrap();
             let pl = PostingList::deserialize(&mut MagicEncodedBuffer::from_vec((*bytes).to_vec()));
             self.cache.insert(tokid, pl.clone());
             Ok(pl)
-        } else {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
-                format!("Can't get posting list for token {}", tokid),
-            ))
         }
     }
 
