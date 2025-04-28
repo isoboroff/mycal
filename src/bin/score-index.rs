@@ -25,7 +25,6 @@ fn main() -> Result<()> {
     let args = Cli::parse();
 
     let mut coll = Store::open(&args.coll_prefix)?;
-    let bincode_config = bincode::config::standard();
 
     let exclude_fn = args.exclude;
 
@@ -46,7 +45,7 @@ fn main() -> Result<()> {
 
     // Convert the model into a vector of FeaturePairs.
     // The weight vector is in tokid order.
-    let model = Classifier::load(&args.model_file, bincode_config)
+    let model = Classifier::load(&args.model_file)
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err.to_string()))?;
     let mut model_query = model
         .w

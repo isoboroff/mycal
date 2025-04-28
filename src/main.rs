@@ -103,13 +103,12 @@ fn train_qrels(
     qrels_args: &ArgMatches,
 ) -> Result<Classifier, std::io::Error> {
     let mut coll = Store::open(coll_prefix)?;
-    let bincode_config = bincode::config::standard();
 
     let model_path = Path::new(model_file);
     let mut model: Classifier;
     if model_path.exists() {
         debug!("Loading model from {}", model_file);
-        model = Classifier::load(model_file, bincode_config).unwrap();
+        model = Classifier::load(model_file).unwrap();
     } else {
         let num_toks = coll.num_features().unwrap();
         debug!("Creating new model of dim {}", num_toks);
@@ -184,7 +183,7 @@ fn score_collection(
     model_file: &str,
     score_args: &ArgMatches,
 ) -> Result<Vec<DocScore>, std::io::Error> {
-    let model = Classifier::load(model_file, bincode::config::standard()).unwrap();
+    let model = Classifier::load(model_file).unwrap();
     println!("Score: classifier dim is {}", model.w.len());
     let n = score_args.get_one::<usize>("num_scores").unwrap();
     let exclude_fn = score_args.get_one::<String>("exclude");
@@ -242,8 +241,7 @@ fn score_one_doc(
     let docid = score_one_args.get_one::<String>("docid").unwrap();
 
     let mut coll = Store::open(coll_prefix)?;
-    let bincode_config = bincode::config::standard();
-    let model = Classifier::load(model_file, bincode_config).unwrap();
+    let model = Classifier::load(model_file).unwrap();
 
     let intid = coll.get_doc_intid(docid).unwrap();
     let fv = coll.get_fv(intid).unwrap();

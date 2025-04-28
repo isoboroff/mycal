@@ -10,7 +10,7 @@ struct Cli {
 fn main() -> Result<()> {
     let args = Cli::parse();
 
-    let model = Classifier::load(&args.model, bincode::config::standard()).unwrap();
+    let model = Classifier::load(&args.model).unwrap();
 
     println!("sparse model");
     for (i, f) in model.w.iter().enumerate() {

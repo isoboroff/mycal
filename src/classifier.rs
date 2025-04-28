@@ -1,5 +1,4 @@
 use crate::FeatureVec;
-use bincode::config::Configuration;
 use bincode::error::DecodeError;
 use bincode::{self, Decode, Encode};
 use rand::seq::IndexedRandom;
@@ -122,8 +121,9 @@ impl Classifier {
         }
     }
 
-    pub fn load(filename: &str, config: Configuration) -> Result<Classifier, DecodeError> {
+    pub fn load(filename: &str) -> Result<Classifier, DecodeError> {
         let mut infp = BufReader::new(File::open(filename).expect("Can't open classifier file"));
+        let config = bincode::config::standard();
         bincode::decode_from_std_read(&mut infp, config)
     }
 
