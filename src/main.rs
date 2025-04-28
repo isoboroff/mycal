@@ -185,6 +185,7 @@ fn score_collection(
     score_args: &ArgMatches,
 ) -> Result<Vec<DocScore>, std::io::Error> {
     let model = Classifier::load(model_file, bincode::config::standard()).unwrap();
+    println!("Score: classifier dim is {}", model.w.len());
     let n = score_args.get_one::<usize>("num_scores").unwrap();
     let exclude_fn = score_args.get_one::<String>("exclude");
 
@@ -202,14 +203,15 @@ fn score_collection(
         _ => (),
     }
 
-    let feat_file = coll_prefix.to_string() + ".ftr";
+    let mut coll = Store::open(&coll_prefix)?;
 
     let mut top_scores: MinMaxHeap<DocScore> = MinMaxHeap::new();
 
-    let mut feats = BufReader::new(File::open(feat_file)?);
-    let mut progress = tqdm!();
+    let num_docs = coll.num_docs().unwrap();
+    let mut progress = tqdm!(total = num_docs);
 
-    while let Ok(fv) = FeatureVec::read_from(&mut feats) {
+    let feats = coll.get_fv_iter();
+    for fv in feats {
         if exclude.contains(&fv.docid) {
             continue;
         }
@@ -222,7 +224,7 @@ fn score_collection(
         while top_scores.len() > *n {
             top_scores.pop_min();
         }
-        let _ = progress.update(1);
+        progress.update(1)?;
     }
 
     let top = top_scores.into_vec_desc();
