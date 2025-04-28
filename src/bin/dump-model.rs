@@ -15,7 +15,7 @@ fn main() -> Result<()> {
     println!("sparse model");
     for (i, f) in model.w.iter().enumerate() {
         if *f != 0.0 {
-            println!("{}: {}", i + 1, *f);
+            println!("{}: {}", i, *f);
         }
     }
 

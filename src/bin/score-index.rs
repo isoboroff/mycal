@@ -54,7 +54,7 @@ fn main() -> Result<()> {
         .enumerate()
         .filter(|w| *w.1 != 0.0)
         .map(|(i, w)| FeaturePair {
-            id: i + 1 as usize,
+            id: i as usize,
             value: *w,
         })
         .collect::<Vec<FeaturePair>>();
@@ -67,15 +67,15 @@ fn main() -> Result<()> {
 
     // accumulate scores
     let mut bar = tqdm!(desc = "Scoring", total = model_query.len());
-    for wt in model_query {
+    for fpair in model_query {
         bar.update(1)?;
-        if let Ok(pl) = coll.get_posting_list(wt.id) {
+        if let Ok(pl) = coll.get_posting_list(fpair.id) {
             for p in pl.postings {
                 if exclude.contains(&p.doc_id) {
                     continue;
                 }
                 let score = results.entry(p.doc_id).or_insert(0.0);
-                *score += wt.value * p.tf as f32;
+                *score += fpair.value * p.tf as f32;
             }
         }
     }
