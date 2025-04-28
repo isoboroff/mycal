@@ -2,13 +2,13 @@ use clap::{Arg, ArgMatches, Command};
 use kdam::{tqdm, BarExt};
 use log::debug;
 use min_max_heap::MinMaxHeap;
-use mycal::{Classifier, DocInfo, DocScore, DocsDb, FeatureVec, Store};
+use mycal::{Classifier, DocScore, Store};
 use ordered_float::OrderedFloat;
 use rand::prelude::*;
 use std::collections::HashSet;
 use std::error::Error;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::str::FromStr;
 use std::vec::Vec;
@@ -241,18 +241,12 @@ fn score_one_doc(
 ) -> Result<f32, std::io::Error> {
     let docid = score_one_args.get_one::<String>("docid").unwrap();
 
-    let docsdb_file = coll_prefix.to_string() + ".lib";
-    let feat_file = coll_prefix.to_string() + ".ftr";
+    let mut coll = Store::open(coll_prefix)?;
     let bincode_config = bincode::config::standard();
     let model = Classifier::load(model_file, bincode_config).unwrap();
 
-    let docs = DocsDb::open(&docsdb_file);
-    let mut feats = BufReader::new(File::open(feat_file).expect("Could not open feature file"));
-
-    let dib = docs.ext2int.get(docid).unwrap().unwrap();
-    let di: DocInfo = bincode::decode_from_slice(&dib, bincode_config).unwrap().0;
-    feats.seek(SeekFrom::Start(di.offset))?;
-    let fv = FeatureVec::read_from(&mut feats).expect("Error deserializing feature vec");
+    let intid = coll.get_doc_intid(docid).unwrap();
+    let fv = coll.get_fv(intid).unwrap();
 
     let score = model.inner_product(&fv);
     println!("{:?}", score);
