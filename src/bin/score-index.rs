@@ -69,12 +69,13 @@ fn main() -> Result<()> {
     for fpair in model_query {
         bar.update(1)?;
         if let Ok(pl) = coll.get_posting_list(fpair.id) {
+            let idf = (coll.num_docs().unwrap() as f32) / (pl.postings.len() as f32);
             for p in pl.postings {
                 if exclude.contains(&p.doc_id) {
                     continue;
                 }
                 let score = results.entry(p.doc_id).or_insert(0.0);
-                *score += fpair.value * p.tf as f32;
+                *score += fpair.value * (p.tf as f32) * idf;
             }
         }
     }
