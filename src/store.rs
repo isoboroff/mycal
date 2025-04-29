@@ -188,6 +188,13 @@ impl Store {
         FeatureVecReader::new(self.fvfile.take().unwrap())
     }
 
+    pub fn get_idf(&mut self, tokid: usize) -> Result<f32, Box<dyn std::error::Error>> {
+        if self.idf_values.is_none() {
+            self.load_idf_values()?;
+        }
+        Ok(self.idf_values.as_ref().unwrap()[tokid])
+    }
+
     fn load_vocab(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         if self.vocab.is_some() {
             return Ok(());
@@ -205,6 +212,19 @@ impl Store {
         let docinfob_path = format!("{}/docid_map", self.path);
         let docinfo = OnDiskCompressedHash::open(&docinfob_path)?;
         self.docids = Some(docinfo);
+        Ok(())
+    }
+
+    fn load_idf_values(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if self.idf_values.is_some() {
+            return Ok(());
+        }
+        let idf_path = format!("{}/idf", self.path);
+        let mut idf_file = BufReader::new(File::open(idf_path)?);
+        self.idf_values = Some(decode_from_std_read(
+            &mut idf_file,
+            bincode::config::standard(),
+        )?);
         Ok(())
     }
 
