@@ -37,6 +37,9 @@ ap.add_argument('-z', '--zero-steps',
 ap.add_argument('-l', '--lockfile',
                 default='lockfile',
                 help='Lockfile to use when training')
+ap.add_argument('-L', '--disable-locking',
+                action='store_true',
+                help='Disable collection data lock')
 ap.add_argument('-d', '--docdb',
                 help='Document database prefix',
                 default='cd45')
@@ -60,11 +63,16 @@ class Lock:
         self.file = None
         
     def acquire(self):
+        if args.disable_locking:
+            return
+        self.file = open(self.filename, 'w')
         self.file = open(self.filename, 'w')
         print(os.getpid(), file=self.file)
         fcntl.flock(self.file, fcntl.LOCK_EX)
     
     def release(self):
+        if args.disable_locking:
+            return
         if self.file:
             fcntl.flock(self.file, fcntl.LOCK_UN)
             self.file.close()

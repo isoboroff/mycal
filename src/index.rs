@@ -1,15 +1,19 @@
 use bincode::{Decode, Encode};
-use kdam::tqdm;
+use kdam::{tqdm, BarExt};
 use log::debug;
+use ordered_float::OrderedFloat;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt::Display,
     fs::{File, OpenOptions},
     io::{BufReader, BufWriter, Read, Seek, Write},
     path::Path,
 };
 
-use crate::compress::{magic_bytes_required, vbyte_bytes_required, MagicEncodedBuffer};
+use crate::{
+    compress::{magic_bytes_required, vbyte_bytes_required, MagicEncodedBuffer},
+    Classifier, DocScore, FeaturePair, Store,
+};
 
 // This lets us print arrays of bytes in binary format
 struct Bytes<'a>(&'a [u8]);
@@ -264,4 +268,104 @@ impl InvertedFile {
             Ok(_bytes) => offwriter.flush(),
         }
     }
+}
+
+pub struct IndexSearchConfig {
+    num_results: usize,
+    excludes: Option<Vec<String>>,
+}
+
+impl IndexSearchConfig {
+    pub fn new() -> Self {
+        IndexSearchConfig {
+            num_results: 0,
+            excludes: None,
+        }
+    }
+    pub fn with_num_results(self, num_results: usize) -> Self {
+        let mut me = self;
+        me.num_results = num_results;
+        me
+    }
+    pub fn with_exclude_docs(self, excludes: Vec<String>) -> Self {
+        let mut me = self;
+        me.excludes = Some(excludes);
+        me
+    }
+    pub fn num_results(self) -> usize {
+        self.num_results
+    }
+    pub fn excludes(self) -> Option<Vec<String>> {
+        self.excludes
+    }
+}
+
+pub fn score_using_index(
+    coll: &mut Store,
+    model: Classifier,
+    config: IndexSearchConfig,
+) -> Result<Vec<DocScore>, Box<dyn std::error::Error>> {
+    let exclude = match config.excludes {
+        Some(excl_set) => {
+            let mut excludes = HashSet::new();
+            for docid in excl_set {
+                excludes.insert(coll.get_doc_intid(&docid)?);
+            }
+            excludes
+        }
+        _ => HashSet::new(),
+    };
+
+    // Convert the model into a vector of FeaturePairs.
+    // The weight vector is in tokid order.
+    let mut model_query = model
+        .w
+        .iter()
+        .enumerate()
+        .filter(|w| *w.1 != 0.0)
+        .map(|(i, w)| FeaturePair {
+            id: i as usize,
+            value: *w,
+        })
+        .collect::<Vec<FeaturePair>>();
+
+    // Run through the "query" in decreasing feature score order.
+    // Later on we can try to stop early if we have to.
+    model_query.sort_by(|a, b| b.value.abs().partial_cmp(&a.value.abs()).unwrap());
+
+    let mut results: HashMap<u32, f32> = HashMap::new();
+
+    // accumulate scores
+    let mut bar = tqdm!(desc = "Scoring", total = model_query.len());
+    for fpair in model_query {
+        bar.update(1)?;
+        if let Ok(pl) = coll.get_posting_list(fpair.id) {
+            let idf = (coll.num_docs().unwrap() as f32) / (pl.postings.len() as f32);
+            for p in pl.postings {
+                if exclude.contains(&(p.doc_id as usize)) {
+                    continue;
+                }
+                let score = results.entry(p.doc_id).or_insert(0.0);
+                *score += fpair.value * (p.tf as f32) * idf;
+            }
+        }
+    }
+
+    let mut rvec = results
+        .into_iter()
+        .map(|(k, v)| {
+            let di = coll.get_docid(k as usize).unwrap();
+            DocScore {
+                docid: di,
+                score: OrderedFloat::from(v) * model.scale,
+            }
+        })
+        .collect::<Vec<DocScore>>();
+    rvec.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+
+    //for r in rvec.iter().take(config.num_results) {
+    //    println!("{} {}", r.docid, r.score);
+    //}
+
+    Ok(rvec)
 }

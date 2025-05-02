@@ -1,8 +1,5 @@
 use clap::Parser;
-use kdam::{tqdm, BarExt};
-use mycal::{Classifier, DocScore, FeaturePair, Store};
-use ordered_float::OrderedFloat;
-use std::collections::{HashMap, HashSet};
+use mycal::{index, Classifier, Store};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Result};
 
@@ -16,11 +13,6 @@ struct Cli {
     exclude: Option<String>,
 }
 
-struct Score {
-    docid: u32,
-    score: f32,
-}
-
 fn main() -> Result<()> {
     let args = Cli::parse();
 
@@ -28,16 +20,15 @@ fn main() -> Result<()> {
 
     let exclude_fn = args.exclude;
 
-    let mut exclude = HashSet::new();
+    let mut exclude = Vec::new();
     match exclude_fn {
         Some(efn) => {
             let exclude_fp = BufReader::new(File::open(efn)?);
             exclude_fp
                 .lines()
                 .map(|line| line.unwrap().split_whitespace().nth(2).unwrap().to_string())
-                .map(|d| coll.get_doc_intid(&d).unwrap())
-                .for_each(|i| {
-                    exclude.insert(i as u32);
+                .for_each(|docid| {
+                    exclude.push(docid);
                 });
         }
         _ => (),
@@ -47,54 +38,11 @@ fn main() -> Result<()> {
     // The weight vector is in tokid order.
     let model = Classifier::load(&args.model_file)
         .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err.to_string()))?;
-    let mut model_query = model
-        .w
-        .iter()
-        .enumerate()
-        .filter(|w| *w.1 != 0.0)
-        .map(|(i, w)| FeaturePair {
-            id: i as usize,
-            value: *w,
-        })
-        .collect::<Vec<FeaturePair>>();
 
-    // Run through the "query" in decreasing feature score order.
-    // Later on we can try to stop early if we have to.
-    model_query.sort_by(|a, b| b.value.abs().partial_cmp(&a.value.abs()).unwrap());
-
-    let mut results: HashMap<u32, f32> = HashMap::new();
-
-    // accumulate scores
-    let mut bar = tqdm!(desc = "Scoring", total = model_query.len());
-    for fpair in model_query {
-        bar.update(1)?;
-        if let Ok(pl) = coll.get_posting_list(fpair.id) {
-            let idf = (coll.num_docs().unwrap() as f32) / (pl.postings.len() as f32);
-            for p in pl.postings {
-                if exclude.contains(&p.doc_id) {
-                    continue;
-                }
-                let score = results.entry(p.doc_id).or_insert(0.0);
-                *score += fpair.value * (p.tf as f32) * idf;
-            }
-        }
-    }
-
-    let mut rvec = results
-        .into_iter()
-        .map(|(k, v)| Score {
-            docid: k,
-            score: v * model.scale,
-        })
-        .map(|s| {
-            let di = coll.get_docid(s.docid as usize).unwrap();
-            DocScore {
-                docid: di,
-                score: OrderedFloat::from(s.score),
-            }
-        })
-        .collect::<Vec<DocScore>>();
-    rvec.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+    let config = index::IndexSearchConfig::new()
+        .with_num_results(args.num_results)
+        .with_exclude_docs(exclude);
+    let rvec = index::score_using_index(&mut coll, model, config).unwrap();
 
     for r in rvec.iter().take(args.num_results) {
         println!("{} {}", r.docid, r.score);
