@@ -1,12 +1,18 @@
 use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
 use actix_web_helmet::Helmet;
 use clap::Parser;
+use mycal::classifier::train_qrels;
 use mycal::Store;
+use serde::Deserialize;
 use std::sync::Mutex;
 
 #[derive(Parser)]
 struct Cli {
     coll_prefix: String,
+    #[arg(short, long)]
+    host: Option<String>,
+    #[arg(short, long)]
+    port: Option<u16>,
 }
 
 struct AppState {
@@ -27,13 +33,32 @@ async fn main() -> std::io::Result<()> {
             .service(train)
             .service(score)
     })
-    .bind(("127.0.0.1", 8080))?
+    .bind((
+        args.host.unwrap_or("127.0.0.1".to_string()),
+        args.port.unwrap_or(8080),
+    ))?
     .run()
     .await
 }
 
+#[derive(Deserialize)]
+struct TrainInfo {
+    coll: String,
+    model_file: String,
+    qrels_file: String,
+    rel_level: Option<i32>,
+    sample_neg: Option<usize>,
+}
+
 #[get("/train")]
-async fn train(state: web::Data<AppState>) -> impl Responder {
+async fn train(state: web::Data<AppState>, query: web::Query<TrainInfo>) -> impl Responder {
+    _ = train_qrels(
+        &query.coll,
+        &query.model_file,
+        &query.qrels_file,
+        query.rel_level.unwrap_or(1),
+        query.sample_neg.unwrap_or(0),
+    );
     HttpResponse::Ok().body(format!("train sez {:?}", state.coll.lock().unwrap().config))
 }
 
