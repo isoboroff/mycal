@@ -1,16 +1,13 @@
 use clap::{Arg, ArgMatches, Command};
 use kdam::{tqdm, BarExt};
-use log::debug;
 use min_max_heap::MinMaxHeap;
+use mycal::classifier::train_qrels;
 use mycal::{Classifier, DocScore, Store};
 use ordered_float::OrderedFloat;
-use rand::prelude::*;
 use std::collections::HashSet;
 use std::error::Error;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::path::Path;
-use std::str::FromStr;
 use std::vec::Vec;
 
 fn cli() -> Command {
@@ -83,7 +80,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     match args.subcommand() {
         Some(("train", qrels_args)) => {
-            train_qrels(coll_prefix, model_file, qrels_args)?;
+            let qrels_file = qrels_args.get_one::<String>("qrels_file").unwrap();
+            let rel_level = qrels_args.get_one::<i32>("level").unwrap();
+            let num_neg = qrels_args.get_one::<usize>("negatives").unwrap();
+            train_qrels(coll_prefix, model_file, qrels_file, *rel_level, *num_neg)?;
         }
         Some(("score", score_args)) => {
             score_collection(coll_prefix, model_file, score_args)?;
@@ -95,87 +95,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         None => panic!("No subcommand specified"),
     }
     Ok(())
-}
-
-fn train_qrels(
-    coll_prefix: &str,
-    model_file: &str,
-    qrels_args: &ArgMatches,
-) -> Result<Classifier, std::io::Error> {
-    let mut coll = Store::open(coll_prefix)?;
-
-    let model_path = Path::new(model_file);
-    let mut model: Classifier;
-    if model_path.exists() {
-        debug!("Loading model from {}", model_file);
-        model = Classifier::load(model_file).unwrap();
-    } else {
-        let num_toks = coll.num_features().unwrap();
-        debug!("Creating new model of dim {}", num_toks);
-        model = Classifier::new(num_toks, 200000);
-    }
-
-    let qrels_file = qrels_args.get_one::<String>("qrels_file").unwrap();
-    let qrels = BufReader::new(File::open(qrels_file).expect("Could not open qrels file"));
-
-    let mut pos = Vec::new();
-    let mut neg = Vec::new();
-    let mut using = HashSet::new();
-
-    /*
-    Read a qrels-formatted file specifying the training documents.
-    Get each document's feature vector and add it to the appropriate list (pos or neg)
-    */
-    debug!("Getting examples from qrels file");
-    qrels
-        .lines()
-        .filter(|result| !result.as_ref().unwrap().starts_with('#'))
-        .map(|line| {
-            let line = line.unwrap();
-            line.split_whitespace().map(|x| x.to_string()).collect()
-        })
-        .for_each(|fields: Vec<String>| {
-            if let Ok(intid) = coll.get_doc_intid(&fields[2]) {
-                using.insert(fields[2].clone());
-                if let Ok(mut fv) = coll.get_fv(intid) {
-                    if fv.squared_norm == 0.0 {
-                        fv.compute_norm();
-                    }
-                    let rel = i32::from_str(&fields[3]).unwrap();
-                    let min = qrels_args.get_one::<i32>("level").unwrap();
-
-                    if rel < *min {
-                        neg.push(fv);
-                        println!("qrels-neg {} {}", fields[2], fields[3]);
-                    } else {
-                        pos.push(fv);
-                        println!("qrels-pos {} {}", fields[2], fields[3]);
-                    };
-                } else {
-                    println!("Error reading fv for {}", fields[2]);
-                }
-            } else {
-                println!("Document not found: {}", fields[2]);
-            }
-        });
-
-    // If requested, add num_neg more negative examples to neg
-    let num_neg = qrels_args.get_one::<usize>("negatives").unwrap();
-    if *num_neg > 0 {
-        let docvec = coll.docids.as_ref().unwrap().get_values();
-        let mut rng = rand::rng();
-
-        docvec
-            .choose_multiple(&mut rng, *num_neg)
-            .for_each(|intid| {
-                let fv = coll.get_fv(*intid).unwrap();
-                neg.push(fv);
-            });
-    }
-
-    model.train(&pos, &neg);
-    model.save(model_file)?;
-    Ok(model)
 }
 
 fn score_collection(

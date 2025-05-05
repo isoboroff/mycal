@@ -1,9 +1,13 @@
-use crate::FeatureVec;
+use crate::{FeatureVec, Store};
 use bincode::error::DecodeError;
 use bincode::{self, Decode, Encode};
+use log::debug;
 use rand::seq::IndexedRandom;
+use std::collections::HashSet;
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Write};
+use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::path::Path;
+use std::str::FromStr;
 
 pub struct Classifier {
     pub lambda: f32,
@@ -247,4 +251,83 @@ impl Classifier {
         self.squared_norm +=
             x.squared_norm * x_scale * x_scale + (2.0 * self.scale * inner_product);
     }
+}
+
+pub fn train_qrels(
+    coll_prefix: &str,
+    model_file: &str,
+    qrels_file: &str,
+    rel_level: i32,
+    num_neg: usize,
+) -> Result<Classifier, std::io::Error> {
+    let mut coll = Store::open(coll_prefix)?;
+
+    let model_path = Path::new(model_file);
+    let mut model: Classifier;
+    if model_path.exists() {
+        debug!("Loading model from {}", model_file);
+        model = Classifier::load(model_file).unwrap();
+    } else {
+        let num_toks = coll.num_features().unwrap();
+        debug!("Creating new model of dim {}", num_toks);
+        model = Classifier::new(num_toks, 200000);
+    }
+
+    let qrels = BufReader::new(File::open(qrels_file).expect("Could not open qrels file"));
+
+    let mut pos = Vec::new();
+    let mut neg = Vec::new();
+    let mut using = HashSet::new();
+
+    /*
+    Read a qrels-formatted file specifying the training documents.
+    Get each document's feature vector and add it to the appropriate list (pos or neg)
+    */
+    debug!("Getting examples from qrels file");
+    qrels
+        .lines()
+        .filter(|result| !result.as_ref().unwrap().starts_with('#'))
+        .map(|line| {
+            let line = line.unwrap();
+            line.split_whitespace().map(|x| x.to_string()).collect()
+        })
+        .for_each(|fields: Vec<String>| {
+            if let Ok(intid) = coll.get_doc_intid(&fields[2]) {
+                using.insert(fields[2].clone());
+                if let Ok(mut fv) = coll.get_fv(intid) {
+                    if fv.squared_norm == 0.0 {
+                        fv.compute_norm();
+                    }
+                    let rel = i32::from_str(&fields[3]).unwrap();
+                    let min = rel_level;
+
+                    if rel < min {
+                        neg.push(fv);
+                        println!("qrels-neg {} {}", fields[2], fields[3]);
+                    } else {
+                        pos.push(fv);
+                        println!("qrels-pos {} {}", fields[2], fields[3]);
+                    };
+                } else {
+                    println!("Error reading fv for {}", fields[2]);
+                }
+            } else {
+                println!("Document not found: {}", fields[2]);
+            }
+        });
+
+    // If requested, add num_neg more negative examples to neg
+    if num_neg > 0 {
+        let docvec = coll.docids.as_ref().unwrap().get_values();
+        let mut rng = rand::rng();
+
+        docvec.choose_multiple(&mut rng, num_neg).for_each(|intid| {
+            let fv = coll.get_fv(*intid).unwrap();
+            neg.push(fv);
+        });
+    }
+
+    model.train(&pos, &neg);
+    model.save(model_file)?;
+    Ok(model)
 }
