@@ -254,14 +254,12 @@ impl Classifier {
 }
 
 pub fn train_qrels(
-    coll_prefix: &str,
+    coll: &mut Store,
     model_file: &str,
     qrels_file: &str,
     rel_level: i32,
     num_neg: usize,
 ) -> Result<Classifier, std::io::Error> {
-    let mut coll = Store::open(coll_prefix)?;
-
     let model_path = Path::new(model_file);
     let mut model: Classifier;
     if model_path.exists() {

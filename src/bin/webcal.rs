@@ -43,7 +43,6 @@ async fn main() -> std::io::Result<()> {
 
 #[derive(Deserialize)]
 struct TrainInfo {
-    coll: String,
     model_file: String,
     qrels_file: String,
     rel_level: Option<i32>,
@@ -53,7 +52,7 @@ struct TrainInfo {
 #[get("/train")]
 async fn train(state: web::Data<AppState>, query: web::Query<TrainInfo>) -> impl Responder {
     _ = train_qrels(
-        &query.coll,
+        &mut state.coll.lock().unwrap(),
         &query.model_file,
         &query.qrels_file,
         query.rel_level.unwrap_or(1),

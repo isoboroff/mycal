@@ -83,7 +83,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             let qrels_file = qrels_args.get_one::<String>("qrels_file").unwrap();
             let rel_level = qrels_args.get_one::<i32>("level").unwrap();
             let num_neg = qrels_args.get_one::<usize>("negatives").unwrap();
-            train_qrels(coll_prefix, model_file, qrels_file, *rel_level, *num_neg)?;
+            let mut coll = Store::open(&coll_prefix)?;
+            train_qrels(&mut coll, model_file, qrels_file, *rel_level, *num_neg)?;
         }
         Some(("score", score_args)) => {
             score_collection(coll_prefix, model_file, score_args)?;
