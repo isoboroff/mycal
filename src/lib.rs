@@ -1,6 +1,8 @@
 use bincode::error::{DecodeError, EncodeError};
 use bincode::{Decode, Encode};
 use ordered_float::OrderedFloat;
+use serde::ser::SerializeStruct;
+use serde::{Serialize, Serializer};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs::File;
@@ -189,6 +191,19 @@ impl FeatureVec {
 pub struct DocScore {
     pub docid: String,
     pub score: OrderedFloat<f32>,
+}
+
+// We need Serialize to be able to ship DocScores out from webcal
+impl Serialize for DocScore {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("DocScore", 2)?;
+        state.serialize_field("docid", &self.docid)?;
+        state.serialize_field("score", &f32::from(self.score))?;
+        state.end()
+    }
 }
 
 impl Ord for DocScore {
