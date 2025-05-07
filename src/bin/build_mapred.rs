@@ -171,6 +171,7 @@ fn build_index(args: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let config = Config {
         num_docs: docid_intid_map.len(),
         num_features: token_tokid_map.len(),
+        pl_cache_size: 0,
     };
     let mut conf_file = File::create(format!("{}/config.toml", args.out_prefix))?;
     conf_file.write_all(toml::to_string(&config).unwrap().as_ref())?;

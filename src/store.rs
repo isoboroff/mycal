@@ -12,6 +12,7 @@ use std::io::{BufReader, Read, Seek};
 pub struct Config {
     pub num_docs: usize,
     pub num_features: usize,
+    pub pl_cache_size: usize,
 }
 
 pub struct FeatureVecReader {
@@ -59,6 +60,7 @@ impl Store {
             Err(_) => Config {
                 num_docs: 0,
                 num_features: 0,
+                pl_cache_size: 100_000,
             },
         };
 
@@ -147,17 +149,25 @@ impl Store {
     pub fn get_posting_list(
         &mut self,
         tokid: usize,
-    ) -> Result<PostingList, Box<dyn std::error::Error>> {
+    ) -> Result<&PostingList, Box<dyn std::error::Error>> {
         if self.invfile.is_none() {
-            self.invfile = Some(InvertedFile::open(&format!("{}/inverted_file", self.path))?);
+            self.invfile = Some(InvertedFile::open(
+                &format!("{}/inverted_file", self.path),
+                self.config.pl_cache_size,
+            )?);
         }
-        let pl = self
+        Ok(self
             .invfile
             .as_mut()
             .unwrap()
             .get_posting_list(tokid)
-            .map_err(|e| Box::new(e))?;
-        Ok(pl)
+            .expect("posting list error"))
+    }
+
+    pub fn print_cache_stats(&self) {
+        if self.invfile.is_some() {
+            self.invfile.as_ref().unwrap().print_cache_stats();
+        }
     }
 
     pub fn get_fv(&mut self, intid: usize) -> Result<FeatureVec, Box<dyn std::error::Error>> {

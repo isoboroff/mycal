@@ -54,8 +54,14 @@ struct TrainArgs {
 
 #[get("/train")]
 async fn train(state: web::Data<AppState>, query: web::Query<TrainArgs>) -> impl Responder {
+    // if we panicked while holding the lock, the lock is poisoned and we have to clean up
+    let mut coll = match state.coll.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+
     match train_qrels(
-        &mut state.coll.lock().unwrap(),
+        &mut coll,
         &query.model_file,
         &query.qrels_file,
         query.rel_level.unwrap_or(1),
@@ -75,7 +81,11 @@ struct ScoreArgs {
 
 #[get("/score")]
 async fn score(state: web::Data<AppState>, query: web::Query<ScoreArgs>) -> impl Responder {
-    let mut coll = state.coll.lock().unwrap();
+    // if we panicked while holding the lock, the lock is poisoned and we have to clean up
+    let mut coll = match state.coll.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
 
     let exclude = match &query.exclude_file {
         Some(efn) => {

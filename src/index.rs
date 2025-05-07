@@ -12,6 +12,7 @@ use std::{
 
 use crate::{
     compress::{magic_bytes_required, vbyte_bytes_required, MagicEncodedBuffer},
+    lrucache::LruCache,
     Classifier, DocScore, FeaturePair, Store,
 };
 
@@ -127,6 +128,12 @@ impl PostingList {
     }
 }
 
+impl AsRef<PostingList> for PostingList {
+    fn as_ref(&self) -> &PostingList {
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use rand::Rng;
@@ -172,13 +179,15 @@ impl PostInfo {
 pub struct InvertedFile {
     inv_filename: String,
     offsets: Vec<PostInfo>,
-    cache: HashMap<usize, PostingList>,
+    cache: LruCache<usize, PostingList>,
     bincode_config: bincode::config::Configuration,
     cache_count: u32,
+    pl_gets: u32,
+    cache_hits: u32,
 }
 
 impl InvertedFile {
-    pub fn open(path: &str) -> Result<InvertedFile, std::io::Error> {
+    pub fn open(path: &str, cache_capacity: usize) -> Result<InvertedFile, std::io::Error> {
         let offfile = File::open(Path::new(path).with_extension("off"))?;
         let mut offreader = BufReader::new(offfile);
         let config = bincode::config::standard();
@@ -186,47 +195,74 @@ impl InvertedFile {
         Ok(InvertedFile {
             inv_filename: path.to_string(),
             offsets: offsets,
-            cache: HashMap::new(),
+            cache: LruCache::new(cache_capacity),
             bincode_config: config,
             cache_count: 0,
+            pl_gets: 0,
+            cache_hits: 0,
         })
     }
     pub fn new(path: &str) -> InvertedFile {
         InvertedFile {
             inv_filename: path.to_string(),
             offsets: Vec::new(),
-            cache: HashMap::new(),
+            cache: LruCache::new(0),
             bincode_config: bincode::config::standard(),
             cache_count: 0,
+            pl_gets: 0,
+            cache_hits: 0,
         }
     }
     pub fn add_posting(&mut self, tokid: usize, docid: u32, tf: u32) {
         assert_ne!(0, tokid);
         assert_ne!(0, docid);
         assert_ne!(0, tf);
-        let pl = self.cache.entry(tokid).or_insert(PostingList::new());
+        self.pl_gets += 1;
+        let pl: &mut PostingList = match self.cache.get_mut(&tokid) {
+            Some(pl) => {
+                self.cache_hits += 1;
+                pl
+            }
+            None => {
+                let pl: PostingList = PostingList::new();
+                self.cache.insert(tokid, pl);
+                self.cache.get_mut(&tokid).unwrap()
+            }
+        };
         pl.add_posting(docid, tf);
+        self.cache_count += 1;
     }
 
-    pub fn get_posting_list(&mut self, tokid: usize) -> Result<PostingList, std::io::Error> {
+    pub fn get_posting_list(&mut self, tokid: usize) -> Result<&PostingList, std::io::Error> {
         assert_ne!(tokid, 0);
-        if self.cache.contains_key(&tokid) {
-            Ok(self.cache.get(&tokid).unwrap().clone())
-        } else {
+        self.pl_gets += 1;
+        if !self.cache.contains_key(tokid) {
             let file = File::open(&self.inv_filename)?;
             let mut invfile = BufReader::new(file);
             let pi = &self.offsets[tokid];
             invfile.seek(std::io::SeekFrom::Start(pi.offset)).unwrap();
             let mut bytes = vec![0; pi.len].into_boxed_slice();
             invfile.read_exact(&mut bytes).unwrap();
-            let pl = PostingList::deserialize(&mut MagicEncodedBuffer::from_vec((*bytes).to_vec()));
-            self.cache.insert(tokid, pl.clone());
-            Ok(pl)
+            let pl: PostingList =
+                PostingList::deserialize(&mut MagicEncodedBuffer::from_vec((*bytes).to_vec()));
+            self.cache.insert(tokid, pl.as_ref().clone());
+        } else {
+            self.cache_hits += 1;
         }
+        Ok(self.cache.get(&tokid).unwrap())
     }
 
     pub fn memusage(&self) -> u32 {
         self.cache_count * std::mem::size_of::<Posting>() as u32
+    }
+
+    pub fn print_cache_stats(&self) {
+        println!(
+            "Gets: {} Cache hits: {} Hit rate {:.2}%",
+            self.pl_gets,
+            self.cache_hits,
+            (self.cache_hits as f32 * 100.0 as f32) / self.pl_gets as f32
+        );
     }
 
     // Append cache to the inverted file and dump the offset table
@@ -239,12 +275,9 @@ impl InvertedFile {
             .open(&self.inv_filename)?;
         let mut invfile: BufWriter<File> = BufWriter::new(file);
 
-        for (tokid, pl) in tqdm!(
-            (&mut self.cache).into_iter(),
-            desc = "posting lists",
-            position = 1
-        ) {
+        for (tokid, pl) in tqdm!(self.cache.iter(), desc = "posting lists", position = 1) {
             let offset = invfile.stream_position()?;
+            let mut pl = pl.clone();
             let bytes = pl.bytes_to_serialize();
             self.offsets.insert(*tokid, PostInfo { offset, len: bytes });
             let mut buf = MagicEncodedBuffer::new_with_capacity(bytes);
@@ -252,8 +285,7 @@ impl InvertedFile {
             invfile.write_all(buf.as_slice())?;
         }
         invfile.flush()?;
-        self.cache = HashMap::new();
-        self.cache_count = 0;
+        self.cache.clear();
 
         let offfpath = Path::new(&self.inv_filename).with_extension("off");
         println!("Saving offsets to {:?}", offfpath);
@@ -339,15 +371,15 @@ pub fn score_using_index(
     let mut bar = tqdm!(desc = "Scoring", total = model_query.len());
     for fpair in model_query {
         bar.update(1)?;
-        if let Ok(pl) = coll.get_posting_list(fpair.id) {
-            let idf = (coll.num_docs().unwrap() as f32) / (pl.postings.len() as f32);
-            for p in pl.postings {
-                if exclude.contains(&(p.doc_id as usize)) {
-                    continue;
-                }
-                let score = results.entry(p.doc_id).or_insert(0.0);
-                *score += fpair.value * (p.tf as f32) * idf;
+        let num_docs = coll.num_docs().unwrap() as f32;
+        let pl = coll.get_posting_list(fpair.id).unwrap();
+        let idf = num_docs / (pl.postings.len() as f32);
+        for p in pl.postings.iter() {
+            if exclude.contains(&(p.doc_id as usize)) {
+                continue;
             }
+            let score = results.entry(p.doc_id).or_insert(0.0);
+            *score += fpair.value * (p.tf as f32) * idf;
         }
     }
 
@@ -366,6 +398,6 @@ pub fn score_using_index(
     //for r in rvec.iter().take(config.num_results) {
     //    println!("{} {}", r.docid, r.score);
     //}
-
+    coll.print_cache_stats();
     Ok(rvec)
 }
