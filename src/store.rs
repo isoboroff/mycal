@@ -48,7 +48,7 @@ impl Store {
         if !std::fs::exists(path)? {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                "Could not find path",
+                format!("Could not find path {}", path),
             ));
         }
         let config: Config = match File::open(format!("{}/config.toml", path)) {
@@ -85,7 +85,7 @@ impl Store {
             .as_ref()
             .unwrap()
             .get_idx_for(token)
-            .ok_or("Could not find token")?;
+            .ok_or(format!("Could not find token {}", token))?;
         Ok(tokid)
     }
 
@@ -122,7 +122,7 @@ impl Store {
             .as_ref()
             .unwrap()
             .get_idx_for(docid)
-            .ok_or("Could not find docid")?;
+            .ok_or(format!("Could not find docid {}", docid))?;
         Ok(intid)
     }
 
@@ -135,7 +135,7 @@ impl Store {
             .as_ref()
             .unwrap()
             .get_key_for(intid)
-            .ok_or("Could not find intid")?;
+            .ok_or(format!("Could not find intid {}", intid))?;
         Ok(docid.clone())
     }
 
