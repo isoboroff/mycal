@@ -373,13 +373,13 @@ pub fn score_using_index(
         bar.update(1)?;
         let num_docs = coll.num_docs().unwrap() as f32;
         let pl = coll.get_posting_list(fpair.id).unwrap();
-        let idf = num_docs / (pl.postings.len() as f32);
+        let _idf = num_docs / (pl.postings.len() as f32);
         for p in pl.postings.iter() {
             if exclude.contains(&(p.doc_id as usize)) {
                 continue;
             }
             let score = results.entry(p.doc_id).or_insert(0.0);
-            *score += fpair.value * (p.tf as f32) * idf;
+            *score += fpair.value * (p.tf as f32); // * idf
         }
     }
 
